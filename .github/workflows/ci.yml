@@ -93,3 +93,28 @@ jobs:
         run: just go-test
       - name: mcp-go consumption examples (CGO-free)
         run: just examples
+
+  # Cross-binding parity (the NO-DRIFT guard): runs the SAME fixture suite through
+  # all four faces (rust / go-via-wasm / python / node) and asserts byte-identical
+  # output. A behavior change that lands in one binding but not the others fails
+  # here. Needs every toolchain, so it is its own job.
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: install maturin
+        run: uv tool install maturin
+      - name: just parity
+        run: just parity
