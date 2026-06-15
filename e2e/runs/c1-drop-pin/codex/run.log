@@ -1,0 +1,6 @@
+--- procs before ---
+(none)
+codex exit: 0
+--- procs AFTER ---
+no-leak: PASS (torn down)
+transcript: e2e/runs/c1-drop-pin/codex/codex.events.jsonl (       6 events)

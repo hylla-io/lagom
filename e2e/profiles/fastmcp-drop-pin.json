@@ -1,0 +1,11 @@
+{
+  "server_name": "guarded",
+  "upstream": { "command": "__NODE__", "args": ["__FAST__"] },
+  "policy": {
+    "default_presence": "keep",
+    "tools": {
+      "secret": { "presence": "drop" },
+      "echo": { "args": { "token": { "pin": "LOCKED" } } }
+    }
+  }
+}

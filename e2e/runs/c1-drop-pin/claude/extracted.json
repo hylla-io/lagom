@@ -1,0 +1,77 @@
+{
+  "init": {
+    "mcp_servers": [
+      {
+        "name": "guarded",
+        "status": "pending"
+      }
+    ],
+    "mcp_tools_at_init": []
+  },
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": {
+        "query": "+guarded secret echo",
+        "max_results": 10
+      }
+    },
+    {
+      "name": "ToolSearch",
+      "input": {
+        "query": "select:mcp__guarded__secret",
+        "max_results": 5
+      }
+    },
+    {
+      "name": "ToolSearch",
+      "input": {
+        "query": "+guarded",
+        "max_results": 25
+      }
+    },
+    {
+      "name": "mcp__guarded__echo",
+      "input": {
+        "message": "hi"
+      }
+    }
+  ],
+  "tool_results": [
+    "[{'type': 'tool_reference', 'tool_name': 'mcp__guarded__echo'}]",
+    "No matching deferred tools found",
+    "[{'type': 'tool_reference', 'tool_name': 'mcp__guarded__echo'}]",
+    "[{'type': 'text', 'text': 'echo:{\"message\":\"hi\",\"token\":\"LOCKED\"}'}]"
+  ],
+  "final_result": "{\"mcp_tools\":[\"mcp__guarded__echo\"],\"tried_secret\":\"no such tool: searched the guarded server (and select:mcp__guarded__secret) and no 'secret' tool exists/is available \u2014 only mcp__guarded__echo is exposed, so the call could not be made\",\"called_echo\":\"echo:{\\\"message\\\":\\\"hi\\\",\\\"token\\\":\\\"LOCKED\\\"}\"}",
+  "usage": {
+    "input_tokens": 3673,
+    "cache_creation_input_tokens": 50699,
+    "cache_read_input_tokens": 81855,
+    "output_tokens": 727,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 50699
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 136,
+        "cache_read_input_tokens": 27543,
+        "cache_creation_input_tokens": 119,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 119,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  }
+}

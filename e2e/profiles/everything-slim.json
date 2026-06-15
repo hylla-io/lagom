@@ -1,0 +1,11 @@
+{
+  "server_name": "guarded",
+  "upstream": { "command": "/opt/homebrew/bin/npx", "args": ["-y", "@modelcontextprotocol/server-everything"] },
+  "policy": {
+    "default_presence": "drop",
+    "tools": {
+      "echo": { "presence": "keep" },
+      "get-sum": { "presence": "keep" }
+    }
+  }
+}

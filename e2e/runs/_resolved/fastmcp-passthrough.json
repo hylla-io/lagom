@@ -1,0 +1,5 @@
+{
+  "server_name": "full",
+  "upstream": { "command": "/opt/homebrew/bin/node", "args": ["/Users/evanschultz/Documents/Code/hylla/lagom/main/bin/fast-mcp.js"] },
+  "policy": { "default_presence": "keep" }
+}

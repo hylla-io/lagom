@@ -1,0 +1,13 @@
+echo
+get-annotated-message
+get-env
+get-resource-links
+get-resource-reference
+get-structured-content
+get-sum
+get-tiny-image
+gzip-file-as-resource
+simulate-research-query
+toggle-simulated-logging
+toggle-subscriber-updates
+trigger-long-running-operation

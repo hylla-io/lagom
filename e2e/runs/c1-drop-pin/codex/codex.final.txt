@@ -1,0 +1,1 @@
+{"mcp_tools":["echo"],"tried_secret":"ERROR: guarded secret tool is not available","called_echo":"echo:{\"message\":\"hi\",\"token\":\"LOCKED\"}"}

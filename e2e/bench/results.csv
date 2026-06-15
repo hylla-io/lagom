@@ -1,0 +1,3 @@
+upstream,full_tools,slim_tools,full_tok,slim_tok,saved_pct
+fast-mcp,2,1,608,561,7.7
+everything,13,2,1812,652,64.0

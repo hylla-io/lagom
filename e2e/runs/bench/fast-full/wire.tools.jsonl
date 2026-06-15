@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"full","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"annotations":{},"description":"Echo a message","inputSchema":{"properties":{"message":{"type":"string"},"token":{"type":"string"}},"required":["message","token"],"type":"object"},"name":"echo"},{"annotations":{},"description":"Reveal the secret","inputSchema":{"properties":{"key":{"type":"string"}},"required":["key"],"type":"object"},"name":"secret"}]}}

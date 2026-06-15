@@ -1,0 +1,10 @@
+{
+  "server_name": "beta",
+  "upstream": { "command": "__NODE__", "args": ["__FAST__"] },
+  "policy": {
+    "default_presence": "drop",
+    "tools": {
+      "secret": { "presence": "keep", "rename": "reveal", "args": { "key": { "pin": "B2" } } }
+    }
+  }
+}

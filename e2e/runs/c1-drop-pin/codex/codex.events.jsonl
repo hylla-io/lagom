@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"019ecab1-f6b6-7432-873a-511e635367f9"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"guarded","tool":"echo","arguments":{"message":"hi"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"guarded","tool":"echo","arguments":{"message":"hi"},"result":{"content":[{"type":"text","text":"echo:{\"message\":\"hi\",\"token\":\"LOCKED\"}"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"mcp_tools\":[\"echo\"],\"tried_secret\":\"ERROR: guarded secret tool is not available\",\"called_echo\":\"echo:{\\\"message\\\":\\\"hi\\\",\\\"token\\\":\\\"LOCKED\\\"}\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":58708,"cached_input_tokens":33536,"output_tokens":174,"reasoning_output_tokens":108}}

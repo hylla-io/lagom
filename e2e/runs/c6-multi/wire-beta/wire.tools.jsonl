@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"beta","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"annotations":{},"description":"Reveal the secret\n\nRestricted by lagom: `key` is fixed.","inputSchema":{"properties":{},"required":[],"type":"object"},"name":"reveal"}]}}

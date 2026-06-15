@@ -1,0 +1,24 @@
+{
+  "tool_calls": [
+    {
+      "server": "guarded",
+      "tool": "echo",
+      "arguments": {
+        "message": "hi"
+      },
+      "result_text": "echo:{\"message\":\"hi\",\"token\":\"LOCKED\"}",
+      "error": null,
+      "status": "completed"
+    }
+  ],
+  "servers": [
+    "guarded"
+  ],
+  "final_message": "{\"mcp_tools\":[\"echo\"],\"tried_secret\":\"ERROR: guarded secret tool is not available\",\"called_echo\":\"echo:{\\\"message\\\":\\\"hi\\\",\\\"token\\\":\\\"LOCKED\\\"}\"}",
+  "usage": {
+    "input_tokens": 58708,
+    "cached_input_tokens": 33536,
+    "output_tokens": 174,
+    "reasoning_output_tokens": 108
+  }
+}

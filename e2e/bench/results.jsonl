@@ -1,0 +1,3 @@
+{"_method": "Anthropic count_tokens claude-haiku-4-5-20251001; tool cost = count(msg+tools)-count(msg); through `sand mcp` wire", "baseline_tok": 8}
+{"upstream": "fast-mcp", "full_tools": 2, "slim_tools": 1, "full_tok": 608, "slim_tok": 561, "saved_pct": 7.7}
+{"upstream": "everything", "full_tools": 13, "slim_tools": 2, "full_tok": 1812, "slim_tok": 652, "saved_pct": 64.0}

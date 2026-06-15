@@ -1,0 +1,5 @@
+{
+  "server_name": "full",
+  "upstream": { "command": "/opt/homebrew/bin/npx", "args": ["-y", "@modelcontextprotocol/server-everything"] },
+  "policy": { "default_presence": "keep" }
+}

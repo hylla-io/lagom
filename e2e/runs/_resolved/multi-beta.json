@@ -1,0 +1,10 @@
+{
+  "server_name": "beta",
+  "upstream": { "command": "/opt/homebrew/bin/node", "args": ["/Users/evanschultz/Documents/Code/hylla/lagom/main/bin/fast-mcp.js"] },
+  "policy": {
+    "default_presence": "drop",
+    "tools": {
+      "secret": { "presence": "keep", "rename": "reveal", "args": { "key": { "pin": "B2" } } }
+    }
+  }
+}

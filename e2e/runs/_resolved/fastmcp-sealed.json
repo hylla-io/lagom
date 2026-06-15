@@ -1,0 +1,8 @@
+{
+  "server_name": "sealed",
+  "upstream": { "command": "/opt/homebrew/bin/node", "args": ["/Users/evanschultz/Documents/Code/hylla/lagom/main/bin/fast-mcp.js"] },
+  "policy": {
+    "default_presence": "drop",
+    "tools": { "echo": { "presence": "keep", "args": { "token": { "pin": "LOCKED" } } } }
+  }
+}

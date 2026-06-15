@@ -1,0 +1,10 @@
+{
+  "server_name": "alpha",
+  "upstream": { "command": "__NODE__", "args": ["__FAST__"] },
+  "policy": {
+    "default_presence": "drop",
+    "tools": {
+      "echo": { "presence": "keep", "rename": "ping", "args": { "token": { "pin": "A1" } } }
+    }
+  }
+}
