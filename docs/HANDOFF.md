@@ -7,7 +7,9 @@ Single source of "where we are" for a fresh session or the sand team. Pairs with
 `docs/SAND_LAGOM_HANDOFF.md` (caveman contract), `docs/POC_FINDINGS.md`
 (real-agent results), `bench/` (real token numbers), `bin/lagom-codex-poc.sh`
 (working codex confinement run), `go/examples/branded.go` (consumer pattern),
-`SAND_LAGOM_FINDINGS.md` (sand's real-consumer proof: joint e2e GREEN + numbers).
+`SAND_LAGOM_FINDINGS.md` (sand's real-consumer proof: joint e2e GREEN + numbers),
+`docs/LAGOM_VIA_SAND_E2E.md` + `e2e/` (all 7 limitations proven through sand,
+codex+claude transcripts + wire probes + savings).
 
 ## ON RESUME (lossless pickup)
 
@@ -22,7 +24,7 @@ don't reconstruct them.
 
 ## STATUS (2026-06-15)
 
-- lagom **v0.1.0, UNRELEASED**. Pushed to `main` at **`a7a748e`** (or later — `git log`) (`github.com/hylla-io/lagom`, private).
+- lagom **v0.1.0, UNRELEASED**. Pushed to `main` at **`a9c140e`** (or later — `git log`) (`github.com/hylla-io/lagom`, private).
 - One Rust core (`lagom-core`) + faces: **CLI**, **Python** (PyO3), **Go** (wasm+wazero, `go get`), **TS/Node** (napi-rs).
 - All 6 gates green (verified): `just ci`, `just go-test`, `just node-test`, `just py-test`, `just parity` (zero drift), `just examples`.
 - Real token savings (Anthropic `count_tokens`, logged in `bench/`): **~52% avg** tool-surface reduction across real MCP servers (everything −64%, filesystem −67%, memory −50%, sequential-thinking −43% via caveman docs).
@@ -46,6 +48,7 @@ Pattern to copy: `go/examples/branded.go` (mcp-go server gated by lagom-go, prov
 - **codex exec e2e GREEN** (`bin/lagom-codex-poc.sh`): real headless agent sees ONLY the slim tool, "secret tool not available", pinned `token=LOCKED` injected (agent never set it), clean teardown. codex connects MCP synchronously — the proven headless confined vehicle.
 - `go get` consumption proven (lagom-demo pulled a real pushed commit; mcp-go e2e green).
 - Token savings real + logged (`bench/results.jsonl|.csv|REPORT.md|raw/`, chart `bench/savings.svg`, re-run `python3 bench/bench.py`).
+- **ALL 7 limitations PROVEN through sand only** (`docs/LAGOM_VIA_SAND_E2E.md`, harness `e2e/`): drop/rename/pin/constrain/sealed/multi-upstream/refire, each via `sand mcp` (lagom invisible), evidenced by real codex + claude -p transcripts AND protocol-level wire probes — never lagom directly. Real savings through sand: everything 13→2 = **64.0%** (count_tokens, `e2e/bench/`). claude -p confines too (async race at init, recovers via ToolSearch). FINDING: lagom brand leaks in agent-facing constraint-rejection error text (`"lagom: rewrite: ..."`) — drop the prefix or let sand strip it.
 - **Joint sand e2e PROVEN** (`SAND_LAGOM_FINDINGS.md`): sand `go get`s lagom-go at `a7a748e` (pseudo-version `v0.0.0-20260615055941-a7a748ef4e56`), wraps `lagom.NewGuard` in its own mcp-go server (`sand mcp --profile`), and a **real headless codex agent** confined to it proved all four concepts through a real upstream + real stdio lifecycle: slim surface only, dropped→"not available", pin injected downstream, no leaked procs. Real numbers through sand's shipped binary: **54.8%** demo-server tool-surface cut (matches lagom's ~52%) + per-role 27.8–66.1% on real ta+hylla upstreams.
 
 ## VEHICLE GUIDANCE (for sand)
