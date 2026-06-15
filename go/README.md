@@ -64,6 +64,23 @@ The package-level functions use a lazily-initialized shared `Engine`. Construct
 dedicated `Engine`s with `lagom.New(ctx)` for parallelism (each owns one wasm
 linear memory, so its calls are serialized under a mutex).
 
+## Typed policy authoring — `PolicyBuilder`
+
+Build a `Policy` fluently in Go (parity with the Python/TS builders):
+
+```go
+pol, _ := lagom.SealedPolicyBuilder(). // drop everything unless kept
+	Keep("search").
+	Rename("search", "find").             // expose under your own name
+	Describe("find", "search the project").// Tier-1 slim description
+	Pin("search", "artifact", "hylla").    // fix + hide an arg
+	ConstrainEnum("search", "query", []any{"a", "b"}).
+	Build()                                // -> Policy JSON for Project/NewGuard/…
+```
+
+`NewPolicyBuilder()` starts in passthrough mode (keep all). You can also build the
+Policy JSON directly — the lib reads whatever you pass.
+
 ## The brandable one-call helper — `Guard`
 
 When an app embeds lagom (rather than running the CLI), it wires a slim,
