@@ -80,8 +80,8 @@ Tier ladder:
 - **Tier 1 — integrator override**: explicit slim text (builder `.describe()` /
   TOML `description`). Preferred.
 - **Tier 2 — addendum fallback**: original text + a deterministic note generated
-  from the schema diff ("Restricted by lagom: `artifact` is fixed; `path` ∈
-  {a,b}."). Never contradicts the schema.
+  from the schema diff ("Restricted: `artifact` is fixed; `path` ∈ {a,b}.").
+  Brand-free so lagom stays invisible; never contradicts the schema.
 - **Tier 0 — shipped skill, NOT a runtime LLM call** (`SPEC.md` §13): lagom
   ships a loadable skill that instructs a *host* orchestrator to use a small
   model to diff the full upstream def against the slim projected surface and

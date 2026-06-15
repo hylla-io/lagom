@@ -133,7 +133,7 @@ fn build_description(
             if restrictions.is_empty() {
                 original.map(str::to_string)
             } else {
-                let addendum = format!("Restricted by lagom: {}.", restrictions.join("; "));
+                let addendum = format!("Restricted: {}.", restrictions.join("; "));
                 if base.is_empty() {
                     Some(addendum)
                 } else {
@@ -267,6 +267,26 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .contains("`artifact` ∈ {a, b}")
+        );
+    }
+
+    // Invisibility: the deterministic addendum names the restriction, never the
+    // engine that imposed it. The agent must not see "lagom" in any projected
+    // description (SPEC.md §4.2 Tier 2).
+    #[test]
+    fn addendum_is_brand_free() {
+        let mut args = BTreeMap::new();
+        args.insert("token".to_string(), ArgPolicy::Pin(json!("LOCKED")));
+        let tp = ToolPolicy {
+            args,
+            ..Default::default()
+        };
+        let out = project(&[tool("echo")], &policy_with("echo", tp));
+        let desc = out[0].description.as_ref().unwrap();
+        assert!(desc.contains("Restricted:"), "addendum missing: {desc}");
+        assert!(
+            !desc.to_lowercase().contains("lagom"),
+            "projected description leaks the brand: {desc}"
         );
     }
 

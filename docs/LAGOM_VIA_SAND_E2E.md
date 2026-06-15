@@ -2,7 +2,9 @@
 
 Durable, reproducible record of lagom's limitations proven **only through sand**
 (the first real `lagom-go` consumer) — never by calling lagom directly. The
-agent-facing server is always `sand mcp --profile` (lagom *inside*, invisible);
+agent-facing server is always `sand mcp --profile` (lagom *inside* — invisible in
+names/schemas; a description + error brand-leak was found and is fixed/routed, see
+Findings);
 the evidence is each agent's own transcript + a protocol-level wire probe, not the
 agent's self-report. Pairs with `SAND_LAGOM_FINDINGS.md` (sand's side) — same
 tool/field names + the same `count_tokens` method so numbers are comparable.
@@ -37,7 +39,7 @@ tool/field names + the same `count_tokens` method so numbers are comparable.
 | # | concept | evidence (vehicle) | result | artifacts |
 |---|---|---|---|---|
 | 1 | DROP | wire + codex + claude | `secret` absent from surface; agent gets "not available" | `e2e/runs/c1-drop-pin/` |
-| 2 | RENAME / brand | codex (c1 `guarded`; c6 `ping`/`reveal`) | agent sees brand names, never upstream names, never "lagom" | `e2e/runs/c1-*`, `c6-multi/` |
+| 2 | RENAME / brand | codex (c1 `guarded`; c6 `ping`/`reveal`) | agent sees brand names, never upstream names (brand leaked in descriptions/errors — fixed/routed, see Findings) | `e2e/runs/c1-*`, `c6-multi/` |
 | 3 | PIN | wire + codex | agent sends none; upstream receives `token=LOCKED` / `A1` / `key=B2` | `e2e/runs/c1-*`, `c4-*`, `c6-*` |
 | 4 | CONSTRAIN | wire-call | `message:hi`→ok; `message:NOPE`→**rejected** (`isError`), never forwarded | `e2e/runs/c4-constrain/` |
 | 5 | SEALED | wire | `default_presence=drop` → only the allowlist offered | `e2e/runs/c5-sealed/` |
@@ -87,12 +89,25 @@ reproducible via sand's `bench/sand_bench.py`).
 
 ## Findings / issues surfaced
 
-- **lagom brand leaks in agent-facing error annotations.** A constraint rejection
-  returns `"lagom: rewrite: argument ..."` to the agent (c4). lagom is invisible
-  everywhere else (server/tool names, schemas) but the `lagom:` prefix in
-  `thiserror` messages breaks invisibility when surfaced to an agent. *Fix
-  direction:* drop the `lagom:` prefix from agent-facing rewrite/constraint errors
-  (or let sand strip it). Logged, not yet fixed.
+- **Invisibility was NOT complete — names held, descriptions + errors leaked the
+  brand.** Honest correction: lagom is invisible in server names, tool names, and
+  schemas, but two paths leaked the word "lagom" to the agent:
+  1. **Description addendum (FIXED in core).** A constrained/pinned tool under a
+     *passthrough* description got `"Restricted by lagom: \`token\` is fixed."`
+     appended — so the agent literally saw "lagom" in the `echo` description in
+     these very runs. Fixed: the addendum is now brand-free (`"Restricted: ..."`,
+     `crates/lagom-core/src/project.rs`; regression test `addendum_is_brand_free`;
+     verified across all 4 bindings in `parity/out/*`). **The committed wire/
+     transcript captures here predate the fix** (taken through `sand@a7a748e`) and
+     still show the old text; a clean through-sand re-capture is pending sand's
+     pin bump (the fix is verified at the lagom level today, not yet through sand).
+  2. **Constraint-rejection error prefix (consumer-boundary).** A reject returns
+     `"lagom: rewrite: argument ..."` — the `lagom:` comes from the lagom-go
+     binding (`go/lagom.go:157`), which prefixes *all* errors (intentional + useful
+     for Go devs). It only leaks because the consumer relays the raw error string
+     to the agent. *Fix:* sand should present the clean reject text (strip the
+     `lagom: rewrite:` prefix) when surfacing a gate rejection to an agent; lagom
+     keeps the prefix for developer-facing errors.
 - **claude -p async race** (above) — real, recoverable via ToolSearch; codex preferred.
 - **No process leak** in any run — sand reaps on stdin-EOF/signal AND the harness
   `pkill`s the workdir; every run logged `no-leak: PASS`.
