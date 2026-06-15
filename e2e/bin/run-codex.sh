@@ -19,7 +19,7 @@
 set -uo pipefail
 
 SAND="$(command -v sand)"; CODEX="$(command -v codex)"; NODE="$(command -v node)"
-REPO="/Users/evanschultz/Documents/Code/hylla/lagom/main"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"  # repo root (e2e/bin -> ..)
 UPSTREAM="${UPSTREAM:-$REPO/bin/fast-mcp.js}"
 : "${PROFILE:?set PROFILE}"; : "${SERVER:?set SERVER}"; : "${KEPT:?set KEPT}"
 : "${PROMPT:?set PROMPT}"; : "${OUT:?set OUT}"

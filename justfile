@@ -194,3 +194,9 @@ parity-compare:
         go={{parity_out}}/go.json \
         python={{parity_out}}/python.json \
         node={{parity_out}}/node.json
+
+# Regenerate the deterministic lagom-via-sand e2e evidence + savings numbers
+# (through `sand mcp`). Needs sand on PATH + ANTHROPIC_API_KEY for the bench.
+# Agent-level codex/claude runs are printed for manual run (see docs).
+reproduce:
+    bash e2e/bin/reproduce.sh

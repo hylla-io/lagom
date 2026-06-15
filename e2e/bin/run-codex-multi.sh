@@ -9,7 +9,7 @@
 #        PROMPT=<probe> OUT=<dir> bin/run-codex-multi.sh
 set -uo pipefail
 SAND="$(command -v sand)"; CODEX="$(command -v codex)"
-UP="/Users/evanschultz/Documents/Code/hylla/lagom/main/bin/fast-mcp.js"
+UP="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/fast-mcp.js"  # repo-relative
 : "${PA:?}"; : "${SA:?}"; : "${KA:?}"; : "${PB:?}"; : "${SB:?}"; : "${KB:?}"; : "${PROMPT:?}"; : "${OUT:?}"
 mkdir -p "$OUT"
 W="$(mktemp -d /tmp/lagom-e2e-multi.XXXXXX)"

@@ -9,7 +9,7 @@
 #        PROMPT=<probe> OUT=<dir> [UPSTREAM=<js>] bin/run-claude.sh
 set -uo pipefail
 SAND="$(command -v sand)"; CLAUDE="$(command -v claude)"
-REPO="/Users/evanschultz/Documents/Code/hylla/lagom/main"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"  # repo root (e2e/bin -> ..)
 UPSTREAM="${UPSTREAM:-$REPO/bin/fast-mcp.js}"
 : "${PROFILE:?set PROFILE}"; : "${SERVER:?set SERVER}"; : "${ALLOW:?set ALLOW}"
 : "${PROMPT:?set PROMPT}"; : "${OUT:?set OUT}"
