@@ -1,0 +1,5 @@
+default-presence = "drop"
+[tools."create_or_update_file"]
+presence = "keep"
+[tools."search_repositories"]
+presence = "keep"

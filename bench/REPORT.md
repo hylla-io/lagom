@@ -1,6 +1,6 @@
 # lagom token-savings benchmark
 
-Measured 2026-06-15T03:57:52Z with Anthropic `count_tokens` (model `claude-haiku-4-5-20251001`); tool-def tokens = count(message+tools) − count(message-only baseline=8). Slim = sealed allowlist keeping 2 tools; caveman = + terse description override. Raw tool surfaces in `bench/raw/`.
+Measured 2026-06-15T11:07:26Z with Anthropic `count_tokens` (model `claude-haiku-4-5-20251001`); tool-def tokens = count(message+tools) − count(message-only baseline=8). Slim = sealed allowlist keeping 2 tools; caveman = + terse description override. Raw tool surfaces in `bench/raw/`.
 
 | server | tools full→slim | full tok | slim(allowlist) | slim(caveman) | saved (allow / caveman) |
 |---|---|---|---|---|---|
@@ -8,6 +8,11 @@ Measured 2026-06-15T03:57:52Z with Anthropic `count_tokens` (model `claude-haiku
 | filesystem | 14→2 | 2590 | 861 | 752 | 66.8% / 71.0% |
 | memory | 9→2 | 1710 | 853 | 836 | 50.1% / 51.1% |
 | sequential-thinking | 1→1 | 1539 | 1539 | 874 | 0.0% / 43.2% |
-| everything-2 | 13→2 | 2040 | 729 | 719 | 64.3% / 64.8% |
+| git | 12→2 | 2089 | 678 | 673 | 67.5% / 67.8% |
+| fetch | 1→1 | 813 | 813 | 746 | 0.0% / 8.2% |
+| time | 2→2 | 811 | 811 | 808 | 0.0% / 0.4% |
+| sqlite | 6→2 | 879 | 634 | 619 | 27.9% / 29.6% |
+| github | 26→2 | 5385 | 884 | 882 | 83.6% / 83.6% |
+| puppeteer | 7→2 | 1213 | 836 | 833 | 31.1% / 31.3% |
 
-**Totals (allowlist):** 9919 → 4711 tool tokens — **52.5% saved** across 5 servers.
+**Totals (allowlist):** 19069 → 8638 tool tokens — **54.7% saved** across 10 servers.

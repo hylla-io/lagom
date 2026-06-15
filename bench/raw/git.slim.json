@@ -1,0 +1,41 @@
+[
+  {
+    "description": "Shows the working tree status",
+    "inputSchema": {
+      "properties": {
+        "repo_path": {
+          "title": "Repo Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo_path"
+      ],
+      "title": "GitStatus",
+      "type": "object"
+    },
+    "name": "git_status"
+  },
+  {
+    "description": "Shows changes in the working directory that are not yet staged",
+    "inputSchema": {
+      "properties": {
+        "context_lines": {
+          "default": 3,
+          "title": "Context Lines",
+          "type": "integer"
+        },
+        "repo_path": {
+          "title": "Repo Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo_path"
+      ],
+      "title": "GitDiffUnstaged",
+      "type": "object"
+    },
+    "name": "git_diff_unstaged"
+  }
+]

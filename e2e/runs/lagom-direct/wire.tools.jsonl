@@ -1,0 +1,1 @@
+{"id":2,"jsonrpc":"2.0","result":{"tools":[{"description":"Echo a message\n\nRestricted: `token` is fixed.","inputSchema":{"properties":{"message":{"type":"string"}},"required":["message"],"type":"object"},"name":"echo"}]}}

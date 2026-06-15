@@ -2,8 +2,9 @@
 # lagom PoC — codex exec confined to a lagom-slimmed MCP. codex connects MCP
 # synchronously (startup_timeout_sec), so unlike claude -p it sees the tools.
 set -uo pipefail
-LAGOM="/Users/evanschultz/Documents/Code/hylla/lagom/main/target/debug/lagom"
-FAST="/Users/evanschultz/Documents/Code/hylla/lagom/main/bin/fast-mcp.js"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"  # repo root (bin/ -> ..)
+LAGOM="${LAGOM:-$REPO/target/debug/lagom}"
+FAST="${FAST:-$REPO/bin/fast-mcp.js}"
 W="$(mktemp -d /tmp/lagom-codex.XXXXXX)"
 cleanup() { pkill -f "$W" 2>/dev/null; sleep 1; rm -rf "$W"; }
 trap cleanup EXIT

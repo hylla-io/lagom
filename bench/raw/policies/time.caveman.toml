@@ -1,0 +1,7 @@
+default-presence = "drop"
+[tools."get_current_time"]
+presence = "keep"
+description = "get_current_time tool"
+[tools."convert_time"]
+presence = "keep"
+description = "convert_time tool"

@@ -1,0 +1,7 @@
+default-presence = "drop"
+[tools."read_query"]
+presence = "keep"
+description = "read_query tool"
+[tools."write_query"]
+presence = "keep"
+description = "write_query tool"

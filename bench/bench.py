@@ -21,13 +21,22 @@ MODEL = "claude-haiku-4-5-20251001"
 BASE = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
 KEY = os.environ["ANTHROPIC_API_KEY"]
 
-# A "fuck ton" of real npm MCP servers. Unreachable ones are skipped + logged.
+# A broad set of real, popular MCP servers (npx + uvx). Servers that need creds
+# or can't start headless are skipped AND logged (status:"skipped") — never
+# silently dropped, so the corpus is honest about coverage.
 SERVERS = [
     ("everything", ["npx", "-y", "@modelcontextprotocol/server-everything"]),
     ("filesystem", ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]),
     ("memory", ["npx", "-y", "@modelcontextprotocol/server-memory"]),
     ("sequential-thinking", ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]),
-    ("everything-2", ["npx", "-y", "@modelcontextprotocol/server-everything"]),
+    ("git", ["uvx", "mcp-server-git"]),
+    ("fetch", ["uvx", "mcp-server-fetch"]),
+    ("time", ["uvx", "mcp-server-time"]),
+    ("sqlite", ["uvx", "mcp-server-sqlite", "--db-path", "/tmp/lagom-bench.db"]),
+    ("github", ["npx", "-y", "@modelcontextprotocol/server-github"]),
+    ("brave-search", ["npx", "-y", "@modelcontextprotocol/server-brave-search"]),
+    ("puppeteer", ["npx", "-y", "@modelcontextprotocol/server-puppeteer"]),
+    ("slack", ["npx", "-y", "@modelcontextprotocol/server-slack"]),
 ]
 KEEP_K = 2  # the slim "this agent needs only K tools" allowlist size
 

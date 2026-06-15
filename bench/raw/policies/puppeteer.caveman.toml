@@ -1,0 +1,7 @@
+default-presence = "drop"
+[tools."puppeteer_navigate"]
+presence = "keep"
+description = "puppeteer_navigate tool"
+[tools."puppeteer_screenshot"]
+presence = "keep"
+description = "puppeteer_screenshot tool"

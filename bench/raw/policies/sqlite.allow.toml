@@ -1,0 +1,5 @@
+default-presence = "drop"
+[tools."read_query"]
+presence = "keep"
+[tools."write_query"]
+presence = "keep"

@@ -1,0 +1,10 @@
+# lagom-direct confinement policy (TOML for `lagom serve --config`): keep all,
+# DROP secret, PIN echo.token. The projected echo description gains the
+# brand-free addendum "Restricted: `token` is fixed." (no "lagom" leak).
+default-presence = "keep"
+
+[tools.secret]
+presence = "drop"
+
+[tools.echo.args.token]
+pin = "LOCKED"

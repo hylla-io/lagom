@@ -1,0 +1,7 @@
+default-presence = "drop"
+[tools."create_or_update_file"]
+presence = "keep"
+description = "create_or_update_file tool"
+[tools."search_repositories"]
+presence = "keep"
+description = "search_repositories tool"

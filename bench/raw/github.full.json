@@ -1,0 +1,1046 @@
+[
+  {
+    "description": "Create or update a single file in a GitHub repository",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "description": "Branch to create/update the file in",
+          "type": "string"
+        },
+        "content": {
+          "description": "Content of the file",
+          "type": "string"
+        },
+        "message": {
+          "description": "Commit message",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path where to create/update the file",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        },
+        "sha": {
+          "description": "SHA of the file being replaced (required when updating existing files)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "path",
+        "content",
+        "message",
+        "branch"
+      ],
+      "type": "object"
+    },
+    "name": "create_or_update_file"
+  },
+  {
+    "description": "Search for GitHub repositories",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "page": {
+          "description": "Page number for pagination (default: 1)",
+          "type": "number"
+        },
+        "perPage": {
+          "description": "Number of results per page (default: 30, max: 100)",
+          "type": "number"
+        },
+        "query": {
+          "description": "Search query (see GitHub search syntax)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "search_repositories"
+  },
+  {
+    "description": "Create a new GitHub repository in your account",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "autoInit": {
+          "description": "Initialize with README.md",
+          "type": "boolean"
+        },
+        "description": {
+          "description": "Repository description",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name",
+          "type": "string"
+        },
+        "private": {
+          "description": "Whether the repository should be private",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "create_repository"
+  },
+  {
+    "description": "Get the contents of a file or directory from a GitHub repository",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "description": "Branch to get contents from",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path to the file or directory",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "get_file_contents"
+  },
+  {
+    "description": "Push multiple files to a GitHub repository in a single commit",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "description": "Branch to push to (e.g., 'main' or 'master')",
+          "type": "string"
+        },
+        "files": {
+          "description": "Array of files to push",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "message": {
+          "description": "Commit message",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "branch",
+        "files",
+        "message"
+      ],
+      "type": "object"
+    },
+    "name": "push_files"
+  },
+  {
+    "description": "Create a new issue in a GitHub repository",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "assignees": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "body": {
+          "type": "string"
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "milestone": {
+          "type": "number"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "title"
+      ],
+      "type": "object"
+    },
+    "name": "create_issue"
+  },
+  {
+    "description": "Create a new pull request in a GitHub repository",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "description": "The name of the branch you want the changes pulled into",
+          "type": "string"
+        },
+        "body": {
+          "description": "Pull request body/description",
+          "type": "string"
+        },
+        "draft": {
+          "description": "Whether to create the pull request as a draft",
+          "type": "boolean"
+        },
+        "head": {
+          "description": "The name of the branch where your changes are implemented",
+          "type": "string"
+        },
+        "maintainer_can_modify": {
+          "description": "Whether maintainers can modify the pull request",
+          "type": "boolean"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        },
+        "title": {
+          "description": "Pull request title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "title",
+        "head",
+        "base"
+      ],
+      "type": "object"
+    },
+    "name": "create_pull_request"
+  },
+  {
+    "description": "Fork a GitHub repository to your account or specified organization",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "organization": {
+          "description": "Optional: organization to fork to (defaults to your personal account)",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo"
+      ],
+      "type": "object"
+    },
+    "name": "fork_repository"
+  },
+  {
+    "description": "Create a new branch in a GitHub repository",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "description": "Name for the new branch",
+          "type": "string"
+        },
+        "from_branch": {
+          "description": "Optional: source branch to create from (defaults to the repository's default branch)",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "branch"
+      ],
+      "type": "object"
+    },
+    "name": "create_branch"
+  },
+  {
+    "description": "Get list of commits of a branch in a GitHub repository",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "type": "string"
+        },
+        "page": {
+          "type": "number"
+        },
+        "perPage": {
+          "type": "number"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo"
+      ],
+      "type": "object"
+    },
+    "name": "list_commits"
+  },
+  {
+    "description": "List issues in a GitHub repository with filtering options",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "type": "string"
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "page": {
+          "type": "number"
+        },
+        "per_page": {
+          "type": "number"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "since": {
+          "type": "string"
+        },
+        "sort": {
+          "enum": [
+            "created",
+            "updated",
+            "comments"
+          ],
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "open",
+            "closed",
+            "all"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo"
+      ],
+      "type": "object"
+    },
+    "name": "list_issues"
+  },
+  {
+    "description": "Update an existing issue in a GitHub repository",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "assignees": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "body": {
+          "type": "string"
+        },
+        "issue_number": {
+          "type": "number"
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "milestone": {
+          "type": "number"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "open",
+            "closed"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "issue_number"
+      ],
+      "type": "object"
+    },
+    "name": "update_issue"
+  },
+  {
+    "description": "Add a comment to an existing issue",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "issue_number": {
+          "type": "number"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "issue_number",
+        "body"
+      ],
+      "type": "object"
+    },
+    "name": "add_issue_comment"
+  },
+  {
+    "description": "Search for code across GitHub repositories",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "order": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "type": "string"
+        },
+        "page": {
+          "minimum": 1,
+          "type": "number"
+        },
+        "per_page": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "number"
+        },
+        "q": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "q"
+      ],
+      "type": "object"
+    },
+    "name": "search_code"
+  },
+  {
+    "description": "Search for issues and pull requests across GitHub repositories",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "order": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "type": "string"
+        },
+        "page": {
+          "minimum": 1,
+          "type": "number"
+        },
+        "per_page": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "number"
+        },
+        "q": {
+          "type": "string"
+        },
+        "sort": {
+          "enum": [
+            "comments",
+            "reactions",
+            "reactions-+1",
+            "reactions--1",
+            "reactions-smile",
+            "reactions-thinking_face",
+            "reactions-heart",
+            "reactions-tada",
+            "interactions",
+            "created",
+            "updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "q"
+      ],
+      "type": "object"
+    },
+    "name": "search_issues"
+  },
+  {
+    "description": "Search for users on GitHub",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "order": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "type": "string"
+        },
+        "page": {
+          "minimum": 1,
+          "type": "number"
+        },
+        "per_page": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "number"
+        },
+        "q": {
+          "type": "string"
+        },
+        "sort": {
+          "enum": [
+            "followers",
+            "repositories",
+            "joined"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "q"
+      ],
+      "type": "object"
+    },
+    "name": "search_users"
+  },
+  {
+    "description": "Get details of a specific issue in a GitHub repository.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "issue_number": {
+          "type": "number"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "issue_number"
+      ],
+      "type": "object"
+    },
+    "name": "get_issue"
+  },
+  {
+    "description": "Get details of a specific pull request",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "pull_number": {
+          "description": "Pull request number",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "pull_number"
+      ],
+      "type": "object"
+    },
+    "name": "get_pull_request"
+  },
+  {
+    "description": "List and filter repository pull requests",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "description": "Filter by base branch name",
+          "type": "string"
+        },
+        "direction": {
+          "description": "The direction of the sort",
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "type": "string"
+        },
+        "head": {
+          "description": "Filter by head user or head organization and branch name",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "page": {
+          "description": "Page number of the results",
+          "type": "number"
+        },
+        "per_page": {
+          "description": "Results per page (max 100)",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        },
+        "sort": {
+          "description": "What to sort results by",
+          "enum": [
+            "created",
+            "updated",
+            "popularity",
+            "long-running"
+          ],
+          "type": "string"
+        },
+        "state": {
+          "description": "State of the pull requests to return",
+          "enum": [
+            "open",
+            "closed",
+            "all"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo"
+      ],
+      "type": "object"
+    },
+    "name": "list_pull_requests"
+  },
+  {
+    "description": "Create a review on a pull request",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The body text of the review",
+          "type": "string"
+        },
+        "comments": {
+          "description": "Comments to post as part of the review (specify either position or line, not both)",
+          "items": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "description": "Text of the review comment",
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "The relative path to the file being commented on",
+                    "type": "string"
+                  },
+                  "position": {
+                    "description": "The position in the diff where you want to add a review comment",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "path",
+                  "position",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "description": "Text of the review comment",
+                    "type": "string"
+                  },
+                  "line": {
+                    "description": "The line number in the file where you want to add a review comment",
+                    "type": "number"
+                  },
+                  "path": {
+                    "description": "The relative path to the file being commented on",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "body"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "commit_id": {
+          "description": "The SHA of the commit that needs a review",
+          "type": "string"
+        },
+        "event": {
+          "description": "The review action to perform",
+          "enum": [
+            "APPROVE",
+            "REQUEST_CHANGES",
+            "COMMENT"
+          ],
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "pull_number": {
+          "description": "Pull request number",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "pull_number",
+        "body",
+        "event"
+      ],
+      "type": "object"
+    },
+    "name": "create_pull_request_review"
+  },
+  {
+    "description": "Merge a pull request",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "commit_message": {
+          "description": "Extra detail to append to automatic commit message",
+          "type": "string"
+        },
+        "commit_title": {
+          "description": "Title for the automatic commit message",
+          "type": "string"
+        },
+        "merge_method": {
+          "description": "Merge method to use",
+          "enum": [
+            "merge",
+            "squash",
+            "rebase"
+          ],
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "pull_number": {
+          "description": "Pull request number",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "pull_number"
+      ],
+      "type": "object"
+    },
+    "name": "merge_pull_request"
+  },
+  {
+    "description": "Get the list of files changed in a pull request",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "pull_number": {
+          "description": "Pull request number",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "pull_number"
+      ],
+      "type": "object"
+    },
+    "name": "get_pull_request_files"
+  },
+  {
+    "description": "Get the combined status of all status checks for a pull request",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "pull_number": {
+          "description": "Pull request number",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "pull_number"
+      ],
+      "type": "object"
+    },
+    "name": "get_pull_request_status"
+  },
+  {
+    "description": "Update a pull request branch with the latest changes from the base branch",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "expected_head_sha": {
+          "description": "The expected SHA of the pull request's HEAD ref",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "pull_number": {
+          "description": "Pull request number",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "pull_number"
+      ],
+      "type": "object"
+    },
+    "name": "update_pull_request_branch"
+  },
+  {
+    "description": "Get the review comments on a pull request",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "pull_number": {
+          "description": "Pull request number",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "pull_number"
+      ],
+      "type": "object"
+    },
+    "name": "get_pull_request_comments"
+  },
+  {
+    "description": "Get the reviews on a pull request",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string"
+        },
+        "pull_number": {
+          "description": "Pull request number",
+          "type": "number"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "pull_number"
+      ],
+      "type": "object"
+    },
+    "name": "get_pull_request_reviews"
+  }
+]

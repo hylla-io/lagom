@@ -1,0 +1,3 @@
+default-presence = "drop"
+[tools."fetch"]
+presence = "keep"

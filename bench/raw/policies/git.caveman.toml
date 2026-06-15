@@ -1,0 +1,7 @@
+default-presence = "drop"
+[tools."git_status"]
+presence = "keep"
+description = "git_status tool"
+[tools."git_diff_unstaged"]
+presence = "keep"
+description = "git_diff_unstaged tool"
