@@ -1,0 +1,38 @@
+{
+  "name": "@hylla-io/lagom",
+  "version": "0.1.0",
+  "description": "Node.js/TypeScript binding for lagom — narrow an upstream MCP server into a sealed, slimmed projection (project/rewrite/merge/validate).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hylla-io/lagom"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "napi": {
+    "binaryName": "lagom",
+    "targets": [
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "napi build --platform --release --manifest-path Cargo.toml",
+    "build:debug": "napi build --platform --manifest-path Cargo.toml",
+    "test": "node --test '__test__/**/*.test.mjs'"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  }
+}

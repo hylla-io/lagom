@@ -1,0 +1,184 @@
+{
+  "_doc": "Canonical cross-binding parity fixture (the NO-DRIFT guard). One file, run through every face (Rust core, Go-via-wasm, Python, TS). Each case names an op and its input envelope; every face must produce a byte-identical ok-JSON payload and an identical ok/err classification. A divergence is a CRITICAL drift bug. Inputs use the wire shape every binding shares: input_schema, default_presence, snake_case enum tags, {\"pin\":..}/{\"constrain\":{\"enum\":..}} arg policies. See SPEC.md and CLAUDE.md 'Binding parity & docs - NO DRIFT'.",
+  "upstream": [
+    {
+      "name": "search",
+      "description": "Search.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "artifact": { "type": "string" },
+          "query": { "type": "string" },
+          "limit": { "type": "integer" }
+        },
+        "required": ["artifact", "query"]
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Write.",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ],
+  "cases": [
+    {
+      "name": "project_sealed_keep_pin",
+      "op": "project",
+      "expect": "ok",
+      "policy": {
+        "default_presence": "drop",
+        "tools": {
+          "search": { "presence": "keep", "args": { "artifact": { "pin": "hylla" } } }
+        }
+      }
+    },
+    {
+      "name": "project_passthrough_all",
+      "op": "project",
+      "expect": "ok",
+      "policy": { "default_presence": "keep", "tools": {} }
+    },
+    {
+      "name": "project_rename_describe_constrain",
+      "op": "project",
+      "expect": "ok",
+      "policy": {
+        "default_presence": "drop",
+        "tools": {
+          "search": {
+            "presence": "keep",
+            "rename": "find",
+            "description": { "override": "App find." },
+            "args": {
+              "artifact": { "pin": "hylla" },
+              "query": { "constrain": { "enum": ["a", "b"] } },
+              "limit": { "constrain": { "range": { "min": 1.0, "max": 50.0 } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "project_default_arg_stays_visible",
+      "op": "project",
+      "expect": "ok",
+      "policy": {
+        "default_presence": "keep",
+        "tools": {
+          "search": { "args": { "limit": { "default": 10 } } }
+        }
+      }
+    },
+    {
+      "name": "rewrite_inject_pin_ok",
+      "op": "rewrite",
+      "expect": "ok",
+      "call": { "name": "search", "arguments": { "query": "a", "limit": 5 } },
+      "policy": {
+        "tools": {
+          "search": {
+            "args": {
+              "artifact": { "pin": "hylla" },
+              "query": { "constrain": { "enum": ["a", "b"] } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "rewrite_supplies_default_ok",
+      "op": "rewrite",
+      "expect": "ok",
+      "call": { "name": "search", "arguments": { "artifact": "x", "query": "a" } },
+      "policy": {
+        "tools": { "search": { "args": { "limit": { "default": 10 } } } }
+      }
+    },
+    {
+      "name": "rewrite_out_of_enum_rejects",
+      "op": "rewrite",
+      "expect": "err",
+      "call": { "name": "search", "arguments": { "query": "z" } },
+      "policy": {
+        "tools": {
+          "search": {
+            "args": {
+              "artifact": { "pin": "hylla" },
+              "query": { "constrain": { "enum": ["a", "b"] } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "rewrite_out_of_range_rejects",
+      "op": "rewrite",
+      "expect": "err",
+      "call": { "name": "search", "arguments": { "artifact": "x", "query": "a", "limit": 999 } },
+      "policy": {
+        "tools": {
+          "search": { "args": { "limit": { "constrain": { "range": { "min": 1.0, "max": 50.0 } } } } }
+        }
+      }
+    },
+    {
+      "name": "merge_narrow_ok",
+      "op": "merge",
+      "expect": "ok",
+      "base": { "default_presence": "keep", "tools": { "search": { "presence": "keep" } } },
+      "overlay": { "default_presence": "keep", "tools": { "search": { "presence": "drop" } } }
+    },
+    {
+      "name": "merge_widen_rejects",
+      "op": "merge",
+      "expect": "err",
+      "base": { "default_presence": "drop" },
+      "overlay": { "tools": { "search": { "presence": "keep" } } }
+    },
+    {
+      "name": "validate_clean_ok",
+      "op": "validate",
+      "expect": "ok",
+      "policy": { "tools": { "search": { "args": { "artifact": { "pin": "x" } } } } }
+    },
+    {
+      "name": "validate_drift_rejects",
+      "op": "validate",
+      "expect": "err",
+      "policy": { "tools": { "ghost": { "args": { "x": { "pin": 1 } } } } }
+    },
+    {
+      "name": "mint_narrow_ok",
+      "op": "mint",
+      "expect": "ok",
+      "run_id": "agent-7",
+      "base": { "default_presence": "keep", "tools": { "search": { "presence": "keep" } } },
+      "dynamic": { "default_presence": "keep", "tools": { "search": { "presence": "drop" } } },
+      "upstream_command": { "command": "srv", "args": ["-y"], "env": [] }
+    },
+    {
+      "name": "mint_no_overlay_ok",
+      "op": "mint",
+      "expect": "ok",
+      "run_id": "agent-8",
+      "base": { "default_presence": "keep", "tools": { "search": { "presence": "keep" } } },
+      "dynamic": null,
+      "upstream_command": { "command": "srv", "args": [], "env": [] }
+    },
+    {
+      "name": "mint_widen_rejects",
+      "op": "mint",
+      "expect": "err",
+      "run_id": "r",
+      "base": { "default_presence": "keep", "tools": { "search": { "presence": "drop" } } },
+      "dynamic": { "default_presence": "keep", "tools": { "search": { "presence": "keep" } } },
+      "upstream_command": { "command": "srv", "args": [], "env": [] }
+    },
+    {
+      "name": "refire_reproduces_resolved",
+      "op": "refire",
+      "expect": "ok",
+      "mint_of": "mint_narrow_ok"
+    }
+  ]
+}

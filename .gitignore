@@ -15,6 +15,14 @@ crates/lagom-py/.venv/
 __pycache__/
 .pytest_cache/
 
+# lagom-node (napi-rs) build + test artifacts. The compiled `.node` addon is a
+# per-platform binary (re)built by `just node-build`; node_modules is the napi
+# CLI cache. The generated `index.js`/`index.d.ts` ARE committed — they are the
+# npm package's public surface (mirrors the committed go/.wasm blob).
+crates/lagom-node/*.node
+crates/lagom-node/node_modules/
+crates/lagom-node/npm/
+
 # Agent / tool state — track project-level config (.claude/agents/*.md +
 # .claude/settings.json + .claude/hooks/) so subagent personas + tool
 # allowlists travel with the repo. Per-machine variants stay ignored.
@@ -28,6 +36,12 @@ __pycache__/
 # DBs, logs, and cascade scratch stay ignored.
 .ta/*
 !.ta/schema.toml
+
+# Cross-binding parity guard (`just parity`): per-face result maps + the runner
+# crates' build dirs are machine-generated. The fixture + runners + comparator
+# ARE committed (they are the guard's source); only the run outputs are ignored.
+parity/out/
+parity/runners/*/target/
 
 # Editor / IDE cruft
 .vscode/

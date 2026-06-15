@@ -1,0 +1,4 @@
+default-presence = "drop"
+[tools."sequentialthinking"]
+presence = "keep"
+description = "sequentialthinking tool"

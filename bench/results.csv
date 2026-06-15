@@ -1,0 +1,6 @@
+server,tools_full,tools_slim,tool_tokens_full,tool_tokens_slim_allowlist,tool_tokens_slim_caveman,saved_pct_allowlist,saved_pct_caveman
+everything,13,2,2040,729,719,64.3,64.8
+filesystem,14,2,2590,861,752,66.8,71.0
+memory,9,2,1710,853,836,50.1,51.1
+sequential-thinking,1,1,1539,1539,874,0.0,43.2
+everything-2,13,2,2040,729,719,64.3,64.8

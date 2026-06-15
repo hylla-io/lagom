@@ -17,8 +17,25 @@
 //!   integrator base ([`MergeError`] on any widening).
 //! - [`validate`] — drift check of a policy against the live upstream
 //!   ([`DriftError`] per stale reference).
+//!
+//! ## The one-call helper
+//!
+//! [`Guard`] pairs the upstream surface with a frozen policy so an integrator
+//! wires a slim, branded MCP in two calls — [`Guard::slim_defs`] for the
+//! downstream `tools/list`, [`Guard::gate`] for every `tools/call` — without
+//! touching the project/rewrite plumbing. The Python, Node, and Go bindings
+//! mirror this shape exactly.
+//!
+//! ## Ephemeral mint / refire
+//!
+//! [`mint`] resolves an in-code base + dynamic-overlay narrowing into a
+//! [`MintRecord`] (resolved policy + provenance); [`refire`] re-mints the exact
+//! projection from a persisted record (`SPEC.md` §8.2). Both are pure, so they
+//! are shared by every face, including the wasm/Go binding.
 
+mod guard;
 mod merge;
+mod mint;
 mod project;
 mod rewrite;
 mod validate;
@@ -26,7 +43,9 @@ mod validate;
 pub mod policy;
 pub mod tooldef;
 
+pub use guard::Guard;
 pub use merge::{MergeError, merge};
+pub use mint::{MintRecord, PolicySources, ResolvedPolicy, UpstreamCommand, mint, refire};
 pub use policy::{ArgPolicy, Constraint, DescriptionPolicy, Policy, Presence, ToolPolicy};
 pub use project::project;
 pub use rewrite::{Reject, rewrite};

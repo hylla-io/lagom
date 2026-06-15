@@ -205,6 +205,33 @@ fn serve_with_audit_writes_trace_after_roundtrip() {
 
     let kinds: Vec<&str> = events.iter().filter_map(|e| e["kind"].as_str()).collect();
     assert!(
+        kinds.contains(&"mint"),
+        "audit log records the full MintRecord with provenance (§8.2): {kinds:?}"
+    );
+    // The `mint` event carries the resolved policy AND its provenance (the config
+    // path it was discovered from + the upstream command) — the refire basis.
+    let mint = events
+        .iter()
+        .find(|e| e["kind"] == "mint")
+        .expect("mint event present");
+    assert_eq!(
+        mint["record"]["run_id"],
+        serde_json::json!("cli-run"),
+        "mint record is tagged with the run id"
+    );
+    assert!(
+        mint["record"]["sources"]["config_paths"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty()),
+        "mint provenance records the config path: {}",
+        mint["record"]["sources"]
+    );
+    assert_eq!(
+        mint["record"]["sources"]["upstream"]["command"],
+        serde_json::json!(upstream_bin()),
+        "mint provenance records the upstream launch command"
+    );
+    assert!(
         kinds.contains(&"original_defs"),
         "audit log records OriginalDefs (§8.2 trace head): {kinds:?}"
     );
@@ -216,13 +243,146 @@ fn serve_with_audit_writes_trace_after_roundtrip() {
         kinds.contains(&"rewrite"),
         "audit log records the Rewrite from the round-trip (§9.3): {kinds:?}"
     );
-    // Every event is tagged with the supplied run id (§8.2 trace linkage).
+    // Every event is tagged with the supplied run id (§8.2 trace linkage). The
+    // `mint` event carries the run id inside its nested record, the rest at top
+    // level.
     assert!(
         events
             .iter()
-            .all(|e| e["run_id"] == serde_json::json!("cli-run")),
+            .all(|e| e["run_id"] == serde_json::json!("cli-run")
+                || e["record"]["run_id"] == serde_json::json!("cli-run")),
         "every audit record carries the --run-id"
     );
+}
+
+#[test]
+fn refire_from_record_serves_the_recorded_projection() {
+    // The §8.2 ephemeral refire loop from the shipped CLI face: write a
+    // MintRecord (resolved policy pinning `artifact`, provenance, and the upstream
+    // launch command) to disk, then `lagom refire --record <path>` must re-mint
+    // that exact projection and serve it — proving a persisted record alone (no
+    // on-disk lagom.toml) reconstructs the run. We drive a `tools/call` carrying
+    // only `query`; the recorded pin is injected, recorded as a Rewrite.
+    let dir = tempfile::tempdir().unwrap();
+    let record_path = dir.path().join("mint.json");
+    let log_path = dir.path().join("refire-audit.jsonl");
+
+    // A MintRecord whose resolved policy pins `artifact` over the fixture upstream.
+    let record = serde_json::json!({
+        "run_id": "recorded-run",
+        "sources": {
+            "config_paths": [],
+            "upstream": { "command": upstream_bin(), "args": [], "env": [] },
+            "dynamic_inputs": null
+        },
+        "resolved": {
+            "policy": {
+                "default_presence": "keep",
+                "tools": { "search": { "args": { "artifact": { "pin": "hylla" } } } }
+            },
+            "upstream": { "command": upstream_bin(), "args": [], "env": [] }
+        }
+    });
+    std::fs::write(&record_path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+
+    let mut child = StdCommand::new(env!("CARGO_BIN_EXE_lagom"))
+        .current_dir(empty_cwd())
+        .args([
+            "refire",
+            "--record",
+            record_path.to_str().unwrap(),
+            "--audit",
+            log_path.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn lagom refire");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+
+    let send = |stdin: &mut std::process::ChildStdin, msg: &serde_json::Value| {
+        let mut line = serde_json::to_string(msg).unwrap();
+        line.push('\n');
+        stdin.write_all(line.as_bytes()).unwrap();
+        stdin.flush().unwrap();
+    };
+    let recv = |stdout: &mut BufReader<std::process::ChildStdout>| -> serde_json::Value {
+        let mut line = String::new();
+        let n = stdout.read_line(&mut line).expect("read response");
+        assert!(n > 0, "proxy closed before responding");
+        serde_json::from_str(&line).expect("response is JSON-RPC")
+    };
+
+    send(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+    );
+    let init = recv(&mut stdout);
+    assert_eq!(init["id"], serde_json::json!(1));
+    send(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    );
+    send(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params": {"name":"search","arguments":{"query":"abc"}}
+        }),
+    );
+    let call = recv(&mut stdout);
+    assert_eq!(call["id"], serde_json::json!(2), "call response correlates");
+
+    drop(stdin);
+    let _ = child.wait().expect("await lagom refire exit");
+
+    let contents = std::fs::read_to_string(&log_path).expect("refire audit log was created");
+    let events: Vec<serde_json::Value> = contents
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("each line is a JSON audit event"))
+        .collect();
+    let kinds: Vec<&str> = events.iter().filter_map(|e| e["kind"].as_str()).collect();
+
+    // The refired run re-persists its mint record and records the rewrite from the
+    // recorded pin — proving refire served the recorded projection, not a fresh
+    // discovery (the cwd is empty, so a re-resolve would have found no pin).
+    assert!(
+        kinds.contains(&"mint"),
+        "refire re-persists a mint record: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"rewrite"),
+        "the recorded pin must be injected (proves the recorded policy served): {kinds:?}"
+    );
+    let rewrite = events
+        .iter()
+        .find(|e| e["kind"] == "rewrite")
+        .expect("rewrite present");
+    assert_eq!(
+        rewrite["upstream"]["arguments"]["artifact"],
+        serde_json::json!("hylla"),
+        "the recorded pin value was injected by the refired projection"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|e| e["run_id"] == serde_json::json!("recorded-run")
+                || e["record"]["run_id"] == serde_json::json!("recorded-run")),
+        "refire defaults the run id to the record's own run_id"
+    );
+}
+
+#[test]
+fn refire_missing_record_is_error() {
+    lagom()
+        .args(["refire", "--record", "/no/such/mint.json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("mint record"));
 }
 
 /// A throwaway empty directory to run `validate` from, so config *discovery*

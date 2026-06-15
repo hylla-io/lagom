@@ -6,7 +6,9 @@
 //! in-process Python agents, the spawned-process face (`mint_stdio_server`) for
 //! agents that drive a child upstream over stdio, and a typed `PolicyBuilder` so
 //! integrators author a [`lagom_core::Policy`] type-safely from Python
-//! (`SPEC.md` §6.1). It also bundles the shipped lagom **skills** (`SPEC.md`
+//! (`SPEC.md` §6.1), and the brandable one-call [`Guard`] helper that wires a
+//! slim, branded MCP in two calls (`slim_defs` + `gate`). It also bundles the
+//! shipped lagom **skills** (`SPEC.md`
 //! §12) — `shipped_skills()` / `emit_skills()` expose the identical embedded
 //! markdown the CLI's `lagom emit-skills` writes, sourced once from
 //! `lagom-proxy`.
@@ -28,13 +30,15 @@
 
 use lagom_core::{
     ArgPolicy, Constraint, DescriptionPolicy, Policy, Presence, ToolCall, ToolDef, ToolPolicy,
-    merge as core_merge, project as core_project, rewrite as core_rewrite,
-    validate as core_validate,
+    merge as core_merge, mint as core_mint, project as core_project, refire as core_refire,
+    rewrite as core_rewrite, validate as core_validate,
 };
 use std::path::PathBuf;
 
 use lagom_audit::AuditLog;
-use lagom_proxy::{PolicySources, SHIPPED_SKILLS, UpstreamCommand, mint, serve, serve_audited};
+use lagom_proxy::{
+    PolicySources, SHIPPED_SKILLS, UpstreamCommand, mint as proxy_mint, serve, serve_audited,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use serde_json::Value;
@@ -113,6 +117,55 @@ fn validate(policy_json: &str, upstream_json: &str) -> PyResult<()> {
     })
 }
 
+/// Mint an ephemeral per-agent projection in code and return the recorded
+/// [`lagom_core::MintRecord`] as JSON (`SPEC.md` §8.1, §8.2).
+///
+/// `run_id` names the run; `base_json` is the integrator's sealed-ceiling
+/// [`Policy`] as JSON; `dynamic_json` is an optional per-agent narrowing overlay
+/// (pass `None` for none — e.g. a `path` constraint scoping a subagent to the
+/// exact files it may touch); `command`/`args`/`env` are how to launch the
+/// upstream this projection wraps. Returns a `MintRecord` (resolved policy +
+/// provenance) the app persists wherever it likes and later hands to [`refire`]
+/// to reproduce the same server. The overlay may only **narrow** the base; any
+/// widening raises `ValueError` (the sandbox enforcement, `SPEC.md` §5.2).
+/// Deterministic: no LLM, no clock, no disk.
+#[pyfunction]
+#[pyo3(signature = (run_id, base_json, dynamic_json=None, command="", args=None, env=None))]
+fn mint(
+    run_id: &str,
+    base_json: &str,
+    dynamic_json: Option<&str>,
+    command: &str,
+    args: Option<Vec<String>>,
+    env: Option<Vec<(String, String)>>,
+) -> PyResult<String> {
+    let base: Policy = parse_json("base policy", base_json)?;
+    let dynamic: Option<Policy> = match dynamic_json {
+        Some(d) => Some(parse_json("dynamic overlay policy", d)?),
+        None => None,
+    };
+    let upstream = UpstreamCommand {
+        command: command.to_string(),
+        args: args.unwrap_or_default(),
+        env: env.unwrap_or_default(),
+    };
+    let record = core_mint(run_id, &base, dynamic.as_ref(), upstream).map_err(value_err)?;
+    dump_json(&record)
+}
+
+/// Re-mint the recorded resolved policy from a persisted mint record
+/// (refire, `SPEC.md` §8.2).
+///
+/// `record_json` is a [`lagom_core::MintRecord`] as JSON (as returned by
+/// [`mint`]). Returns the [`lagom_core::ResolvedPolicy`] as JSON ready to serve —
+/// the exact projection the original run had, reproduced without re-resolution.
+/// A malformed record raises `ValueError`.
+#[pyfunction]
+fn refire(record_json: &str) -> PyResult<String> {
+    let record = parse_json("mint record", record_json)?;
+    dump_json(&core_refire(&record))
+}
+
 /// Mint a stdio proxy server for `policy` over a spawned upstream and serve it on
 /// this process's stdio until the session ends (`SPEC.md` §7.2, §8, §10).
 ///
@@ -158,7 +211,7 @@ fn mint_stdio_server(
         upstream,
         dynamic_inputs: serde_json::to_value(&policy).map_err(value_err)?,
     };
-    let resolved = mint(&sources).map_err(value_err)?;
+    let resolved = proxy_mint(&sources).map_err(value_err)?;
 
     // Open the audit log (if requested) on the calling thread so an open failure
     // surfaces as a ValueError before we release the GIL and start serving.
@@ -218,6 +271,65 @@ fn emit_skills(dir: &str) -> PyResult<Vec<String>> {
         written.push(path.to_string_lossy().into_owned());
     }
     Ok(written)
+}
+
+/// The brandable one-call helper (`SPEC.md` §2, §7.2): pair the upstream surface
+/// with a policy and gate an MCP through it in two calls.
+///
+/// Construct `Guard(upstream_json, policy_json)` from the app's full tool defs
+/// plus the projection to enforce; then register [`slim_defs`](Self::slim_defs)
+/// as the downstream `tools/list` and run every incoming `tools/call` through
+/// [`gate`](Self::gate) — no `project`/`rewrite` plumbing, no policy threading at
+/// each call site. All branding (renamed names, slim descriptions, dropped
+/// tools) lives in the policy the app supplies; the helper reads nothing itself.
+/// Mirrors [`lagom_core::Guard`] and the Node/Go `Guard` exactly (NO DRIFT).
+#[pyclass]
+struct Guard {
+    inner: lagom_core::Guard,
+}
+
+#[pymethods]
+impl Guard {
+    /// Build a guard from the upstream tool defs and the policy that narrows them.
+    ///
+    /// `upstream_json` is the app's full `tools/list` array as JSON; `policy_json`
+    /// is a [`lagom_core::Policy`] as JSON (from `PolicyBuilder.build`, the app's
+    /// own config, or a literal). The slim surface is projected once here, so a
+    /// malformed input raises `ValueError` immediately rather than at first use.
+    #[new]
+    fn new(upstream_json: &str, policy_json: &str) -> PyResult<Self> {
+        let upstream: Vec<ToolDef> = parse_json("upstream tool defs", upstream_json)?;
+        let policy: Policy = parse_json("policy", policy_json)?;
+        Ok(Self {
+            inner: lagom_core::Guard::new(&upstream, policy),
+        })
+    }
+
+    /// The projected, branded downstream tool defs as a JSON array string — the
+    /// `tools/list` to advertise. Tools dropped, pinned args pruned, names renamed
+    /// and descriptions overridden per the policy.
+    fn slim_defs(&self) -> PyResult<String> {
+        dump_json(&self.inner.slim_defs())
+    }
+
+    /// Gate one incoming downstream `tools/call`.
+    ///
+    /// `call_json` uses the downstream (post-rename) tool name and the args the
+    /// agent supplied through the slim schema. Returns the upstream call as JSON
+    /// (pinned/default args injected, name mapped back); a rejected call (unknown
+    /// or dropped tool, violated constraint) raises `ValueError` annotated with
+    /// the violated bound (`SPEC.md` §9.1 — never swallow).
+    fn gate(&self, call_json: &str) -> PyResult<String> {
+        let call: ToolCall = parse_json("tool call", call_json)?;
+        let upstream = self.inner.gate(&call).map_err(value_err)?;
+        dump_json(&upstream)
+    }
+
+    /// The frozen policy this guard enforces, as a JSON string (e.g. to
+    /// `validate` against a freshly probed upstream).
+    fn policy(&self) -> PyResult<String> {
+        dump_json(self.inner.policy())
+    }
 }
 
 /// A typed, fluent builder for a [`lagom_core::Policy`] from Python
@@ -344,10 +456,13 @@ fn lagom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rewrite, m)?)?;
     m.add_function(wrap_pyfunction!(merge, m)?)?;
     m.add_function(wrap_pyfunction!(validate, m)?)?;
+    m.add_function(wrap_pyfunction!(mint, m)?)?;
+    m.add_function(wrap_pyfunction!(refire, m)?)?;
     m.add_function(wrap_pyfunction!(mint_stdio_server, m)?)?;
     m.add_function(wrap_pyfunction!(shipped_skills, m)?)?;
     m.add_function(wrap_pyfunction!(emit_skills, m)?)?;
     m.add_class::<PolicyBuilder>()?;
+    m.add_class::<Guard>()?;
     Ok(())
 }
 
@@ -446,6 +561,108 @@ mod tests {
     #[test]
     fn malformed_json_is_value_error() {
         assert!(project("not json", "{}").is_err());
+    }
+
+    /// Mint narrows a base by a dynamic overlay into a record; refire reproduces
+    /// the recorded resolved policy byte-for-byte (`SPEC.md` §8.2). Mirrors the Go
+    /// binding's mint/refire test (NO DRIFT).
+    #[test]
+    fn mint_then_refire_round_trips() {
+        let base = json!({"default_presence": "keep", "tools": {"search": {"presence": "keep"}}})
+            .to_string();
+        let dynamic =
+            json!({"default_presence": "keep", "tools": {"search": {"presence": "drop"}}})
+                .to_string();
+        let record_json = mint(
+            "agent-7",
+            &base,
+            Some(&dynamic),
+            "srv",
+            Some(vec!["-y".into()]),
+            None,
+        )
+        .unwrap();
+        let record: serde_json::Value = serde_json::from_str(&record_json).unwrap();
+        assert_eq!(record["run_id"], "agent-7");
+        assert_eq!(
+            record["resolved"]["policy"]["tools"]["search"]["presence"],
+            json!("drop"),
+            "dynamic overlay must drop search"
+        );
+
+        let refired: serde_json::Value =
+            serde_json::from_str(&refire(&record_json).unwrap()).unwrap();
+        assert_eq!(
+            refired, record["resolved"],
+            "refire reproduces the recorded resolved policy"
+        );
+    }
+
+    /// A widening dynamic overlay is rejected by `mint` (the sandbox enforcement).
+    #[test]
+    fn mint_rejects_widening_overlay() {
+        let base = json!({"default_presence": "keep", "tools": {"search": {"presence": "drop"}}})
+            .to_string();
+        let widening =
+            json!({"default_presence": "keep", "tools": {"search": {"presence": "keep"}}})
+                .to_string();
+        assert!(mint("r", &base, Some(&widening), "srv", None, None).is_err());
+    }
+
+    /// A malformed mint record fails loud at refire.
+    #[test]
+    fn refire_malformed_record_is_value_error() {
+        assert!(refire("not json").is_err());
+    }
+
+    /// A branded, sealed policy: keep `search` under the app's own name `find`
+    /// with the app's own description, pin `artifact`, drop the rest.
+    fn branded_policy() -> String {
+        json!({
+            "default_presence": "drop",
+            "tools": {
+                "search": {
+                    "presence": "keep",
+                    "rename": "find",
+                    "description": {"override": "App find."},
+                    "args": {"artifact": {"pin": "hylla"}}
+                }
+            }
+        })
+        .to_string()
+    }
+
+    /// The Guard helper: slim_defs is branded + narrowed, gate injects the pin
+    /// under the renamed call and rejects a dropped tool — all without the caller
+    /// touching project/rewrite. Mirrors lagom_core::Guard (NO DRIFT).
+    #[test]
+    fn guard_slim_defs_and_gate() {
+        let g = Guard::new(&upstream_json(), &branded_policy()).unwrap();
+
+        let defs: Vec<ToolDef> = serde_json::from_str(&g.slim_defs().unwrap()).unwrap();
+        assert_eq!(defs.len(), 1, "write_file must be dropped");
+        assert_eq!(defs[0].name, "find", "must carry the app's branded name");
+        assert_eq!(defs[0].description.as_deref(), Some("App find."));
+        assert!(defs[0].input_schema["properties"].get("artifact").is_none());
+
+        let gated = g
+            .gate(&json!({"name": "find", "arguments": {"query": "x"}}).to_string())
+            .unwrap();
+        let call: ToolCall = serde_json::from_str(&gated).unwrap();
+        assert_eq!(call.name, "search", "branded name maps back to upstream");
+        assert_eq!(call.arguments["artifact"], json!("hylla"), "pin injected");
+
+        assert!(
+            g.gate(&json!({"name": "write_file", "arguments": {}}).to_string())
+                .is_err(),
+            "dropped tool must reject"
+        );
+    }
+
+    /// A malformed policy fails loud at Guard construction.
+    #[test]
+    fn guard_malformed_policy_is_value_error() {
+        assert!(Guard::new(&upstream_json(), "not json").is_err());
     }
 
     /// The binding bundles both shipped skills with their `.skill.md` names.

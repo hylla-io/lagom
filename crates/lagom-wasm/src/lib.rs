@@ -47,8 +47,9 @@
 //! `lagom-go` test driving the real `.wasm` through wazero.
 
 use lagom_core::{
-    Policy, ToolCall, ToolDef, merge as core_merge, project as core_project,
-    rewrite as core_rewrite, validate as core_validate,
+    MintRecord, Policy, ToolCall, ToolDef, UpstreamCommand, merge as core_merge,
+    mint as core_mint, project as core_project, refire as core_refire, rewrite as core_rewrite,
+    validate as core_validate,
 };
 use serde::Deserialize;
 
@@ -192,6 +193,23 @@ struct ValidateArgs {
     upstream: Vec<ToolDef>,
 }
 
+/// JSON envelope for [`mint`]: the in-code base policy, an optional dynamic
+/// narrowing overlay, the run id, and the upstream launch command.
+#[derive(Deserialize)]
+struct MintArgs {
+    run_id: String,
+    base: Policy,
+    #[serde(default)]
+    dynamic: Option<Policy>,
+    upstream: UpstreamCommand,
+}
+
+/// JSON envelope for [`refire`]: the persisted mint record to re-mint.
+#[derive(Deserialize)]
+struct RefireArgs {
+    record: MintRecord,
+}
+
 /// Engine glue for [`project`]: parse `{"upstream","policy"}`, project, emit the
 /// projected `[ToolDef...]` (`SPEC.md` §3, §4).
 fn project_str(input: &str) -> (u8, String) {
@@ -245,6 +263,32 @@ fn validate_str(input: &str) -> (u8, String) {
             )
         }
     }
+}
+
+/// Engine glue for [`mint`]: parse `{"run_id","base","dynamic","upstream"}`,
+/// narrow `base` by the optional `dynamic` overlay, emit the recorded
+/// [`MintRecord`] (resolved policy + provenance), or a tagged widening error
+/// (`SPEC.md` §8.2, §5.2).
+fn mint_str(input: &str) -> (u8, String) {
+    let args: MintArgs = match parse("mint args", input) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    match core_mint(args.run_id, &args.base, args.dynamic.as_ref(), args.upstream) {
+        Ok(record) => ok_json(&record),
+        Err(merge_err) => (STATUS_ERR, merge_err.to_string()),
+    }
+}
+
+/// Engine glue for [`refire`]: parse `{"record"}`, re-mint the recorded resolved
+/// policy, emit the [`ResolvedPolicy`](lagom_core::ResolvedPolicy) (`SPEC.md`
+/// §8.2). Pure: no re-resolution, so the exact recorded projection is reproduced.
+fn refire_str(input: &str) -> (u8, String) {
+    let args: RefireArgs = match parse("refire args", input) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    ok_json(&core_refire(&args.record))
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +353,39 @@ pub unsafe extern "C" fn merge(ptr: *const u8, len: u32) -> u64 {
 pub unsafe extern "C" fn validate(ptr: *const u8, len: u32) -> u64 {
     // SAFETY: forwarded contract from the module ABI; host owns the buffer.
     unsafe { dispatch(ptr, len, validate_str) }
+}
+
+/// Mint an ephemeral projection in code: narrow a base policy by an optional
+/// dynamic overlay and record its provenance (`SPEC.md` §8.1, §8.2).
+///
+/// Input JSON: `{"run_id": str, "base": Policy, "dynamic": Policy|null,
+/// "upstream": UpstreamCommand}`. Result JSON: the [`MintRecord`] (resolved
+/// policy + provenance) to persist for refire; a widening overlay surfaces as a
+/// tagged error (the sandbox enforcement, `SPEC.md` §5.2).
+///
+/// # Safety
+///
+/// `ptr`/`len` must describe a host-allocated UTF-8 buffer (see the module ABI).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mint(ptr: *const u8, len: u32) -> u64 {
+    // SAFETY: forwarded contract from the module ABI; host owns the buffer.
+    unsafe { dispatch(ptr, len, mint_str) }
+}
+
+/// Refire a persisted mint record: re-mint the recorded resolved policy
+/// (`SPEC.md` §8.2).
+///
+/// Input JSON: `{"record": MintRecord}`. Result JSON: the
+/// [`ResolvedPolicy`](lagom_core::ResolvedPolicy) ready to serve — the exact
+/// projection the original run had, reproduced without re-resolution.
+///
+/// # Safety
+///
+/// `ptr`/`len` must describe a host-allocated UTF-8 buffer (see the module ABI).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn refire(ptr: *const u8, len: u32) -> u64 {
+    // SAFETY: forwarded contract from the module ABI; host owns the buffer.
+    unsafe { dispatch(ptr, len, refire_str) }
 }
 
 #[cfg(test)]
@@ -419,6 +496,53 @@ mod tests {
         let (tag, payload) = project_str("not json");
         assert_eq!(tag, STATUS_ERR);
         assert!(payload.contains("invalid project args"), "msg: {payload}");
+    }
+
+    /// `mint` narrows the base by the dynamic overlay and `refire` reproduces the
+    /// recorded resolved policy byte-for-byte — the ephemeral mint/refire loop
+    /// over the wasm ABI (`SPEC.md` §8.2).
+    #[test]
+    fn mint_then_refire_round_trips() {
+        let mint_in = json!({
+            "run_id": "agent-7",
+            "base": {"default_presence": "keep", "tools": {"search": {"presence": "keep"}}},
+            "dynamic": {"default_presence": "keep", "tools": {"search": {"presence": "drop"}}},
+            "upstream": {"command": "srv", "args": ["-y"], "env": []}
+        })
+        .to_string();
+        let (tag, payload) = mint_str(&mint_in);
+        assert_eq!(tag, STATUS_OK, "payload: {payload}");
+        let record: MintRecord = serde_json::from_str(&payload).unwrap();
+        assert_eq!(record.run_id, "agent-7");
+        assert_eq!(
+            record.resolved.policy.tools["search"].presence,
+            Some(lagom_core::Presence::Drop),
+            "dynamic overlay must drop search"
+        );
+
+        let refire_in = json!({"record": record}).to_string();
+        let (tag, refired) = refire_str(&refire_in);
+        assert_eq!(tag, STATUS_OK, "payload: {refired}");
+        assert_eq!(
+            refired,
+            serde_json::to_string(&record.resolved).unwrap(),
+            "refire reproduces the recorded resolved policy byte-for-byte"
+        );
+    }
+
+    /// A widening dynamic overlay is rejected by `mint` (tagged error) — the
+    /// sandbox enforcement, even on the in-code mint path (`SPEC.md` §5.2).
+    #[test]
+    fn mint_rejects_widening_overlay() {
+        let mint_in = json!({
+            "run_id": "r",
+            "base": {"default_presence": "keep", "tools": {"search": {"presence": "drop"}}},
+            "dynamic": {"default_presence": "keep", "tools": {"search": {"presence": "keep"}}},
+            "upstream": {"command": "srv"}
+        })
+        .to_string();
+        let (tag, _) = mint_str(&mint_in);
+        assert_eq!(tag, STATUS_ERR, "re-keeping a dropped tool is widening");
     }
 
     /// `alloc`/`dealloc` round-trips a buffer without corrupting memory: write a

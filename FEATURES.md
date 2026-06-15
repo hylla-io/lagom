@@ -36,6 +36,27 @@ operations; compiles to native and (by construction) wasm. Done and green.
   tool/arg fails loud rather than silently forwarding a broken call.
 - **Determinism** (SPEC §5.4) — minting invokes no LLM and no nondeterministic
   input. *Why:* the precondition for byte-identical refire (§8.2).
+- **Ephemeral mint / refire data + ops** (`MintRecord`, `PolicySources`,
+  `ResolvedPolicy`, `UpstreamCommand`, `mint`, `refire`, SPEC §8.2) — the
+  transport-less, serde-only record types plus a pure in-code `mint` (narrow a
+  base policy by an optional per-agent dynamic overlay, recording provenance) and
+  `refire` (re-mint the recorded resolved policy). *Why:* an ephemeral per-agent
+  projection must be reproducible + traceable, and these types must compile to
+  wasm so every binding (including Go-via-wasm) mints/refires over the same
+  engine; the file-loading `mint` (resolving `config_paths` off disk) stays native
+  in `lagom-proxy`, which re-exports these.
+- **`Guard` — the brandable one-call helper** (`lagom_core::Guard`, SPEC §2,
+  §7.2) — pairs the upstream surface with a frozen `Policy` so an integrator
+  wires a slim, branded MCP in two calls: `slim_defs()` returns the projected
+  downstream `tools/list` (computed once at construction) and `gate(call)`
+  rewrites each incoming `tools/call` back to upstream (or rejects it), without
+  the app touching the `project`/`rewrite` plumbing. *Why:* the first consumer
+  (sand) needs lagom-as-a-lib to be stupid-easy and **invisible** — all branding
+  (renamed tool names, override descriptions, dropped tools) lives in the
+  policy the app supplies; the helper reads nothing itself. Mirrored byte-for-
+  byte in every binding (NO DRIFT): `lagom.Guard` (Python), `new Guard(...)`
+  (Node), `lagom.NewGuard(...)` (Go). Covered by `guard::tests` in core and a
+  parity test in each binding.
 
 ## 2. Description transforms (SPEC §4.2)
 
@@ -71,12 +92,24 @@ operations; compiles to native and (by construction) wasm. Done and green.
 - **`lagom serve --config <f> [--audit <path>] [--run-id <id>] -- <upstream…>`**
   — stdio proxy: spawn the upstream child, drift-validate, serve the projection
   until the session ends. With `--audit` the session routes through
-  `lagom_proxy::serve_audited`, opening an append-only JSONL log that records the
-  original upstream defs + resolved policy at session start and every
-  rewrite/rejection thereafter, tagged with `--run-id` (default `run`). Without
-  the flag, behavior is unchanged (no audit log). *Why:* harness-agnostic
-  drop-in; `--audit` makes the §8.2 refire/traceability trace actually persist
+  `lagom_proxy::serve_audited`, opening an append-only JSONL log. The CLI first
+  persists a full `AuditEvent::Mint` record (resolved policy + provenance: the
+  discovered/explicit config paths, dynamic inputs, and upstream command) as the
+  trace head, then the bridge records the original upstream defs + resolved policy
+  at session start and every rewrite/rejection thereafter, all tagged with
+  `--run-id` (default `run`). Without the flag, behavior is unchanged (no audit
+  log). *Why:* harness-agnostic drop-in; `--audit` makes the §8.2
+  refire/traceability trace — including the full provenance — actually persist
   from a shipped face.
+- **`lagom refire --record <path> [--audit <path>] [--run-id <id>] [-- <upstream…>]`**
+  — re-mint an identical server from a persisted `MintRecord` (§8.2). Reads the
+  record (a bare `MintRecord` JSON object, or a JSONL audit trace whose first
+  `mint` event carries one), refires the **recorded resolved policy** (bypassing
+  re-resolution, so the exact projection is reproduced even after the source
+  config drifted), then runs the stdio proxy. Trailing `--` args override the
+  recorded upstream launch command; `--audit`/`--run-id` append a fresh refirable
+  trace, defaulting the run id to the record's own. *Why:* §8.2 — a recorded run
+  (or a failure) is reproducible from a shipped face, not just a library call.
 - **`lagom emit --config <f> --name <k> -- <upstream…>`** — prints the harness
   stdio-server snippet (`mcpServers` block running `lagom serve`). *Why:* §6.5 —
   lagom never edits `.mcp.json`/`settings.json`; it prints the exact entry to
@@ -103,23 +136,29 @@ operations; compiles to native and (by construction) wasm. Done and green.
 - **Drift-probe at startup** (`spawn_and_validate` / `probe_tools`, §5.3) —
   fetches the live `tools/list` and validates before serving. *Why:* refuse to
   serve a drifted policy.
-- **Minting + refire machinery** (`mint`, `MintRecord`, `ResolvedPolicy`,
-  `serve_audited`, `refire`, §8.2) — resolve a stack of policy sources into one
-  resolved policy, record provenance + resolved policy, re-mint an identical
-  server from a record. *Why:* ephemeral per-agent projections must be
-  reproducible (refire from failure) and traceable. **NOTE:** present as library
-  API only — no shipped face wires it. See KNOWN GAPS.
+- **Minting + refire machinery** (file-loading `mint`, `mint_record`,
+  `serve_audited`, §8.2) — resolve a stack of `lagom.toml` policy sources into one
+  resolved policy and record its provenance. The pure record types (`MintRecord`,
+  `PolicySources`, `ResolvedPolicy`, `UpstreamCommand`) and the pure `mint` /
+  `refire` live in `lagom-core` (transport-less, wasm-safe) and are re-exported
+  here; only the file-loading `mint` (resolving `config_paths` off disk) is
+  proxy-native. *Why:* ephemeral per-agent projections must be reproducible
+  (refire from failure) and traceable, and the record types must compile to wasm
+  so every binding can mint/refire. **Now shipped end to end:** `lagom serve
+  --audit` persists a full `Mint` record and `lagom refire --record` re-mints it
+  (§4); every binding exposes pure mint/refire (§7, §9).
 - **`UpstreamCommand`** — carries the upstream launch command/args/env from
   config (§10). *Why:* lagom owns spawning the child.
 
 ## 6. Audit log — `lagom-audit` (SPEC §9.3)
 
-- **Append-only `AuditEvent` log** with `Rewrite`, `Rejection`, `OriginalDefs`,
-  and `ResolvedPolicy` variants, JSONL round-trip tested. *Why:* §9.3 source of
-  refire + traceability; §9.1 never-swallow (every rewrite/rejection recorded
-  and annotated). **NOTE:** only `Rewrite`/`Rejection` are written in any
-  production path; `OriginalDefs`/`ResolvedPolicy` are never produced live, and
-  no shipped face opens an audit log. See KNOWN GAPS.
+- **Append-only `AuditEvent` log** with `Mint`, `Rewrite`, `Rejection`,
+  `OriginalDefs`, and `ResolvedPolicy` variants, JSONL round-trip tested. *Why:*
+  §9.3 source of refire + traceability; §9.1 never-swallow (every
+  rewrite/rejection recorded and annotated). The `Mint` variant carries the full
+  `lagom_core::MintRecord` (resolved policy + provenance), persisted by `lagom
+  serve --audit` as the trace head so a run is refirable from its own log (§8.2).
+  All five variants are written by the shipped serve/refire faces.
 
 ## 7. Python binding — `lagom-py` (SPEC §2, §7.2)
 
@@ -135,6 +174,14 @@ operations; compiles to native and (by construction) wasm. Done and green.
   CLI's `--audit`/`--run-id`: an append-only JSONL trace recording the original
   upstream defs + resolved policy + every rewrite/rejection (§8.2, §9.3).
   Without `audit`, behavior is unchanged.
+- **`mint` / `refire`** — the pure ephemeral mint/refire over the core
+  (`SPEC.md` §8.2): `mint(run_id, base_json, dynamic_json=None, command, args,
+  env)` narrows a base by an optional per-agent overlay into a `MintRecord` JSON
+  (resolved policy + provenance); `refire(record_json)` re-mints the recorded
+  resolved policy. *Why:* an app builds policy as data and mints/refires per-agent
+  ephemeral projections in code without `lagom.toml` files; parity with the Go and
+  Node bindings (NO DRIFT). A widening overlay or malformed record raises
+  `ValueError`.
 - **Typed `PolicyBuilder`** (incl. `sealed()`) — author a `Policy` type-safely
   from Python. *Why:* §6.1 integrator front-end in the binding language.
 - **`shipped_skills()` / `emit_skills(dir)`** — the identical embedded skill
@@ -162,7 +209,8 @@ The fourth face: the transport-less core delivered to Go consumers as a normal
 
 - **`lagom-wasm` — the wasm32 face of `lagom-core`** (`crates/lagom-wasm`,
   excluded from the workspace like `lagom-py`; built via `just wasm`). Compiles
-  `project`/`rewrite`/`merge`/`validate` to `wasm32-unknown-unknown` behind a
+  `project`/`rewrite`/`merge`/`validate` plus the pure `mint`/`refire`
+  (`SPEC.md` §8.2) to `wasm32-unknown-unknown` behind a
   **JSON-in / JSON-out memory ABI**: exports `alloc`/`dealloc` plus one export
   per op taking `(ptr, len)` and returning a packed `(ptr << 32) | len`, with the
   result buffer prefixed by a **status tag** so engine rejects / drift surface as
@@ -180,9 +228,15 @@ The fourth face: the transport-less core delivered to Go consumers as a normal
   `merge`/`validate` engine from **one `go get`** — no separate binary, no C
   toolchain, nothing read from disk at runtime (the engine is embedded in the
   Go binary). `wazero` is the **only** non-stdlib dependency (`go/go.mod`).
-- **In-process `project`/`rewrite`/`merge`/`validate`** — driven through the
-  embedded wasm engine with no subprocess. *Why:* §2 — the binding exposes the
-  transport-less face for in-process agents; spawning/stdio stay native (§7.3).
+- **In-process `project`/`rewrite`/`merge`/`validate` + `Mint`/`Refire`** —
+  driven through the embedded wasm engine with no subprocess. The wasm ABI gains
+  two exports — `mint` (narrow a base by an optional per-agent dynamic overlay
+  into a `MintRecord`, tagged-error on a widening overlay) and `refire` (re-mint
+  the recorded resolved policy) — surfaced as `lagom.Mint(ctx, runID, base,
+  dynamic, upstream)` / `lagom.Refire(ctx, record)` (`SPEC.md` §8.2). *Why:* §2 —
+  the binding exposes the transport-less face (now incl. the ephemeral
+  mint/refire ergonomics the first consumer needs) for in-process agents;
+  spawning/stdio stay native (§7.3). Parity with Python/Node (NO DRIFT).
 - **Proven by `go/lagom_test.go`** (`just go-test`): `project()` drops a tool and
   pins+hides an arg, `rewrite()` injects the pin and rejects an out-of-enum call
   as a tagged error, `merge()` rejects widening, `validate()` flags drift, and
@@ -192,7 +246,72 @@ The fourth face: the transport-less core delivered to Go consumers as a normal
   would fail the build. *Why:* the security-relevant Go face is exercised end to
   end against the same engine the Rust/Python faces use.
 
-## 10. Build & CI tooling (ADR-0002)
+## 10. Node / TypeScript binding — `lagom-node` (SPEC §2, §7.2, §10)
+
+The fourth language face: the core as a native Node addon (napi-rs), shipped as
+`@hylla-io/lagom` with a generated `index.js` + typed `index.d.ts` so it is typed
+out of the box. A thin in-process skin over `lagom-core`, in byte-identical
+capability parity with Python and Go (NO DRIFT).
+
+- **`project` / `rewrite` / `merge` / `validate`** over JSON strings, same
+  contract as every other binding. Engine rejects, merge widening, and drift all
+  throw a JavaScript `Error` carrying the engine's own annotated message — never
+  swallowed (§9.1). *Why:* the compiled core as a normal npm dependency; the
+  in-process binding the first slice's TS face requires (§10).
+- **`mint` / `refire`** — the pure ephemeral mint/refire over the wasm-clean core
+  (`mint(runId, baseJson, dynamicJson?, command?, args?, env?)` →
+  `MintRecord` JSON; `refire(recordJson)` → `ResolvedPolicy` JSON), parity with
+  Go/Python. A widening overlay or malformed record throws (§8.2). *Why:* an app
+  builds policy as data and mints/refires per-agent ephemeral projections in
+  code.
+- **`Guard`** — `new Guard(upstreamJson, policyJson)` with `slimDefs()` / `gate(callJson)`,
+  the brandable one-call helper mirroring `lagom_core::Guard` exactly (NO DRIFT,
+  §1, SPEC §7.4). *Why:* an app wires a slim, branded MCP in two calls without
+  touching `project`/`rewrite`.
+- **`mintStdioServer(policyJson, command, args?, env?, audit?, runId?)`** — the
+  spawned-process face (spawn the upstream child, drift-validate, bridge JSON-RPC
+  over stdio applying the projection; `audit` writes an append-only JSONL trace).
+  *Why:* §7.2 spawned-agent face, mirroring the CLI and Python.
+- **Typed `PolicyBuilder`** (incl. `sealed()`) — author a `Policy` type-safely
+  from TS/JS. *Why:* §6.1 integrator front-end in the binding language.
+- **`shippedSkills()` / `emitSkills(dir?)`** — the identical embedded skill bytes
+  the CLI writes. *Why:* §12 every binding bundles the skills.
+- **Built/tested via `just node-build` / `just node-test`** (excluded from the
+  workspace `just ci`, like `lagom-py`/`lagom-wasm`, since the addon needs the
+  napi CLI + Node toolchain). Proven in the cross-binding parity guard (§11).
+
+## 11. Cross-binding parity guard — `parity/` (CLAUDE.md "NO DRIFT")
+
+The automated NO-DRIFT enforcement: one shared fixture
+(`parity/fixtures/cases.json`, 16 `project`/`rewrite`/`merge`/`validate`/`mint`/
+`refire` cases — success **and** error variants) is run through **all four
+faces** and compared against the Rust core as the reference.
+
+- **Four face runners** writing `parity/out/<face>.json`: `just rust-parity`
+  (canonical reference, `lagom-core` directly), `just go-parity` (lagom-go via the
+  committed wasm blob, `CGO_ENABLED=0`), `just py-parity` (the wheel in a
+  throwaway uv venv), `just node-parity` (the napi addon). *Why:* prove every
+  shipped face computes the same answer as the core.
+- **Comparator** (`parity/runners/compare`, `just parity-compare`) asserts per
+  case: (1) identical ok/err **classification** across faces, and (2) for ok
+  cases, **byte-identical** result JSON; any divergence is a CRITICAL drift bug
+  that fails the gate non-zero. Error-message *framing* (`ValueError` vs JS
+  `Error` vs `lagom: <op>: <msg>` vs Rust `Display`) is a documented, legitimate
+  per-binding difference, so err-case payload text is deliberately compared by
+  classification only, not byte text. *Why:* byte-identity (all faces serialize
+  the same `lagom_core` `BTreeMap`-backed serde types) catches any serializer- or
+  behavior-level regression; classification upholds the never-swallow contract
+  (§9.1) without forcing artificial cross-language message uniformity.
+- **`just parity`** builds + runs all four faces then the comparator. *Why:* one
+  command proves zero drift before a slice closes. **Current result: 16 cases × 3
+  compared faces (Go/Py/Node) byte-identical to the Rust reference — zero drift.**
+- **Caveat (inherited):** `go-parity` embeds the *committed*
+  `go/internal/wasmbin/lagom.wasm`; if `lagom-core` changed, run `just wasm`
+  first to refresh the blob or the Go face compares a stale engine (the same
+  stale-blob caveat as `go-test`, tracked in KNOWN GAPS and noted in
+  `parity/README.md` + the `just parity` recipe comment).
+
+## 12. Build & CI tooling (ADR-0002)
 
 - **`just ci` gate** — fmt-check + clippy `-D warnings` + test + build over the
   workspace; mirrored in `.github/workflows/ci.yml`. *Why:* language-agnostic
@@ -208,6 +327,15 @@ The fourth face: the transport-less core delivered to Go consumers as a normal
   Homebrew while the wasm std lives under rustup, so `just wasm` drives the rustup
   `stable` toolchain explicitly; `just ci` stays green with `lagom-wasm` excluded,
   as `lagom-py` is.
+- **`just node-build` / `just node-test` / `just node-check`** — build the napi
+  `.node` addon + generated `index.js`/`index.d.ts`, smoke-test the real Node
+  import (a `project()` drop + pin), and fmt+clippy the binding crate. *Why:*
+  `lagom-node` is excluded from the workspace `just ci` (the addon needs the napi
+  CLI + Node toolchain); it is built/tested by its own recipes, like `lagom-py`.
+- **`just parity` (+ per-face `rust-/go-/py-/node-parity`, `parity-compare`)** —
+  the cross-binding NO-DRIFT guard (§11). *Why:* a single local gate proves all
+  four faces stay byte-identical to the core. (Local-only today; not yet a CI job
+  — see KNOWN GAPS.)
 
 ---
 
@@ -224,8 +352,9 @@ Spec capability explicitly out of the first slice (`SPEC.md` §10, §11, §8.3):
   wasm-clean.
 - **Restart / supervision policy for the upstream child** (§11) — 0.1.0 has
   minimal lifecycle only: spawn on init, teardown on exit, crashes loud.
-- **Additional bindings** (Node addon via napi-rs, Rust crate published) — the
-  packaging matrix beyond Python and Go is a 0.1.x question (§13).
+- **A *published* Rust crate** — the binding matrix beyond Python, Node/TS, and
+  Go is a 0.1.x packaging question (§13). (The Node/TS napi-rs binding **now
+  ships** in 0.1.0 — see §10 — and is no longer deferred.)
 - **Connecting lagom directly to a model** (§4.2, §12) — explicitly deferred
   post-0.1.0; doc-slimming stays host-driven via the shipped skill.
 
@@ -239,8 +368,11 @@ slice-2 resolved findings — the two High sandbox escapes, the audit wiring, th
 real-upstream handshake, the BufReader read-ahead, py-in-CI, validate
 type-coherence, the `oneOf` range fix, and `describe --suggest` supersession —
 are folded into the feature sections above; the Go/wasm binding moved out of
-DEFERRED into §9). Resolved findings are kept inline below marked `[RESOLVED]`
-for traceability.
+DEFERRED into §9, and the Node/TS binding + cross-binding parity guard landed as
+§10/§11). The lagom-finish synthesis also resolved the High **Node-README
+doc-drift** finding (the per-binding Node README was missing Guard + mint/refire)
+and the GONOSUMCHECK README inaccuracy — both folded into the docs below.
+Resolved findings are kept inline below marked `[RESOLVED]` for traceability.
 
 ### Medium — sandbox / interception completeness
 
@@ -287,15 +419,25 @@ for traceability.
     A `go-test` CI job using the committed blob would at least guard the Go glue;
     a `wasm` build + diff step would guard the blob's freshness.
 
-- **No shipped face persists a full `MintRecord` (provenance) for refire.** The
-  audit-wiring fix (below, `[RESOLVED]` for the CLI/Python faces) writes
-  `OriginalDefs` + `ResolvedPolicy` — the refire *basis* — but `mint_record()`
-  (which captures `PolicySources` provenance: `config_paths` + `dynamic_inputs`)
-  and `refire(record)` remain **library-only with zero non-test callers**. So the
-  on-disk trace lets you reconstruct the *resolved* policy but not the
-  *provenance* (base profile + overlays + dynamic inputs) the §8.2 trace
-  specifies, and there is no shipped "refire from a recorded run" command. This is
-  still-partial against §8.2 provenance. **Touches `lagom-proxy`/`lagom-cli`.**
+- **Cross-binding parity guard (`just parity`) is not wired into any CI job.**
+  `.github/workflows/ci.yml` has only `check` (`just ci`) and `python` jobs; the
+  NO-DRIFT parity matrix (§11) is a local gate only. A `parity` CI job would catch
+  binding drift on every push. Left out of scope for the lagom-finish task (no CI
+  edits requested); flagged to schedule alongside the already-tracked wasm/Go
+  CI-coverage gap above — both are the same "the non-default faces are not yet in
+  CI" gap. Stale-wasm-blob risk applies here too: `go-parity` embeds the committed
+  blob, so run `just wasm` first when `lagom-core` changed (noted in
+  `parity/README.md` + the recipe comment). No drift observed (the committed blob
+  is fresh; `just parity` is green, 16 cases × 3 faces byte-identical).
+
+- **Parity err-cases compared by classification only, not byte text.** For error
+  cases the comparator asserts the ok/err classification matches across faces but
+  does **not** byte-compare the error message, because each binding legitimately
+  frames the engine's message in its own idiom (Python `ValueError`, JS `Error`,
+  Go `lagom: <op>: <msg>`, Rust `Display`). This is an intentional, documented
+  design choice (`parity/README.md`), not a coverage gap — the never-swallow
+  contract and the classification are both verified, and the runners capture
+  enough to extend the comparator to exact text if ever required.
 
 - **No `lagom.toml` audit key.** Auditing is reachable only via `lagom serve
   --audit`/`--run-id` and the Python `mint_stdio_server` `audit=`/`run_id=`
@@ -352,7 +494,80 @@ for traceability.
   alongside the deferred HTTP/SSE transport (§11) so `bridge.rs` does not become a
   god module.
 
+### Low — docs completeness & cross-binding hygiene
+
+- **No `missing_docs` lint is gated anywhere.** Current docs are complete (a
+  forced `RUSTDOCFLAGS=-W missing_docs cargo doc` over the public crates yields
+  zero warnings), but no crate declares `#![warn(missing_docs)]` /
+  `#![deny(missing_docs)]` and neither `just ci` nor CI runs rustdoc with the
+  lint. A newly-added public item in `lagom-core` (the single source of behavior)
+  could ship undocumented and pass the gate, silently breaking the NO-DRIFT
+  "docs full at all times" invariant. Process/gate gap, not a current defect.
+  *Fix direction:* add `#![warn(missing_docs)]` to at least `lagom-core` and/or a
+  `RUSTDOCFLAGS='-D missing_docs' cargo doc` step to the gate.
+
+- **Rust intra-doc link syntax leaks into the generated TS JSDoc and Python
+  docstrings.** The napi-generated `crates/lagom-node/index.d.ts` JSDoc (and the
+  underlying shared `///` comments the Python binding surfaces) carry Rust
+  intra-doc markup that does not resolve outside rustdoc — e.g.
+  `` [`lagom_core::Guard`] ``, `` [`keep`](Self::keep) ``, `` [`refire`] `` — so a
+  TS editor / TypeDoc and the Python `__doc__` render the raw `[...](Self::...)`
+  text rather than links. Cosmetic, not a missing-doc. *Fix direction:* in the
+  napi/pyo3 doc comments prefer plain prose names ("the `keep` method",
+  "`lagom_core::Guard`") over intra-doc link syntax; keep real intra-doc links in
+  `lagom-core` rustdoc where they resolve.
+
+### Low — security re-attack (inherited)
+
+- **No oversized-input test on the wasm ABI.** `go/lagom.go` bounds-checks the
+  packed `(ptr, len)` result so an out-of-range pointer fails loud, but no test
+  asserts that behavior. The check exists; coverage of the failure path does not.
+
+- **Pattern-constraint regexes are applied verbatim.** `lagom_core::rewrite`
+  tests a `Constraint::Pattern` regex as authored; a loose, unanchored regex can
+  admit path traversal. lagom enforces exactly what the policy says — anchoring is
+  the policy author's responsibility, so a consumer like `sand` must anchor the
+  regexes it generates (`^…$`). Documented expectation, not a core defect.
+
 ### Resolved (folded into the feature sections; kept for traceability)
+
+- **[RESOLVED — §10/docs] The per-binding Node README omitted `Guard` and
+  `mint`/`refire` (doc-parity drift vs the Go README).**
+  `crates/lagom-node/README.md` documented the four pure ops, `PolicyBuilder`,
+  `mintStdioServer`, the shipped skills, and branding, but had **no** `Guard`
+  section and **no** `mint`/`refire` section — while the Go README and the root
+  README both documented them, and the root README points Node consumers at the
+  per-binding README "for the full Node API". Per CLAUDE.md "Binding parity &
+  docs — NO DRIFT" this was a drift bug. *Fixed:* added a "The brandable one-call
+  helper — `Guard`" section (`new Guard` / `slimDefs` / `gate`) and an "Ephemeral
+  mint & refire" section (`mint` / `refire`) to `crates/lagom-node/README.md`,
+  mirroring the Go README against the real TS surface, and added `mint`/`refire`/
+  `Guard` to the binding's import example.
+
+- **[RESOLVED — README] Root README referenced the non-existent Go env var
+  `GONOSUMCHECK`.** *Fixed:* the `GOPRIVATE` note now says `GOPRIVATE` provides the
+  default for `GONOPROXY` and `GONOSUMDB` (skipping the public proxy + checksum
+  DB), dropping the bogus `GONOSUMCHECK`.
+
+### Resolved (slice-1 / slice-2; kept for traceability)
+
+- **[RESOLVED — §5/§4] No shipped face persisted a full `MintRecord`
+  (provenance) for refire, and there was no "refire from a recorded run"
+  command.** `mint_record()` / `refire()` were library-only with zero non-test
+  callers. *Fixed:* the mint-record data types (`MintRecord`, `PolicySources`,
+  `ResolvedPolicy`, `UpstreamCommand`) and the pure `mint`/`refire` moved into
+  `lagom-core` (transport-less, wasm-safe; `lagom-proxy` re-exports them, keeping
+  its file-loading `mint`). `lagom serve --audit` now persists a full
+  `AuditEvent::Mint { record }` (resolved policy + provenance: config paths +
+  dynamic inputs + upstream command) as the trace head; the new `lagom refire
+  --record <path>` re-mints that exact recorded projection (reading a bare
+  `MintRecord` JSON or a JSONL trace's first `mint` event), even after the source
+  config drifted. Every binding exposes the pure mint/refire over the wasm-clean
+  core (Go `Mint`/`Refire`, Python/Node `mint`/`refire`) for in-code per-agent
+  ephemeral projections. Covered by `refire_from_record_serves_the_recorded_projection`
+  + the serve-audit `mint`-provenance assertions (`crates/lagom-cli/tests/cli.rs`),
+  `mint_then_refire_round_trips` in each binding, and the new
+  `lagom-core`/`lagom-wasm` mint/refire unit tests.
 
 - **[RESOLVED — §1] `merge()` let an overlay pin escape a base `Pattern`
   constraint.** `value_satisfies()` returned `true` unconditionally for

@@ -4,9 +4,13 @@
 //! drop-in plus authoring aids. Subcommands:
 //!
 //! - `serve`       — run the stdio proxy (spawn upstream child, serve the
-//!   projected surface). With `--audit <path> [--run-id <id>]` it writes an
-//!   append-only JSONL audit log (original defs, resolved policy, every
-//!   rewrite/rejection) for traceability + refire (`SPEC.md` §8.2, §9.3).
+//!   projected surface). With `--audit <path> [--run-id <id>]` it persists a full
+//!   `MintRecord` (resolved policy + provenance) plus the original defs and every
+//!   rewrite/rejection as an append-only JSONL trace for traceability + refire
+//!   (`SPEC.md` §8.2, §9.3).
+//! - `refire`      — re-mint an identical server from a persisted `MintRecord`
+//!   (`--record <path>`), reproducing the exact recorded projection even after
+//!   the source config has drifted (`SPEC.md` §8.2).
 //! - `emit`        — print the harness stdio-server snippet to paste into
 //!   `.mcp.json` / `settings.json` (lagom never edits them, `SPEC.md` §6.5).
 //! - `validate`    — check a policy against the live upstream (`SPEC.md` §5.3),

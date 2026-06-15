@@ -1,0 +1,7 @@
+default-presence = "drop"
+[tools."read_file"]
+presence = "keep"
+description = "read_file tool"
+[tools."read_text_file"]
+presence = "keep"
+description = "read_text_file tool"

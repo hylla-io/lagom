@@ -606,7 +606,7 @@ async fn refire_is_byte_identical() {
     .unwrap();
 
     let sources = PolicySources {
-        config_paths: vec![cfg],
+        config_paths: vec![cfg.to_string_lossy().into_owned()],
         upstream: fixture_command(false),
         dynamic_inputs: Value::Null,
     };

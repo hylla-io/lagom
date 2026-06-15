@@ -64,6 +64,8 @@ type Engine struct {
 	rewrite api.Function
 	merge   api.Function
 	valid   api.Function
+	mint    api.Function
+	refire  api.Function
 }
 
 // New instantiates the embedded lagom-core wasm module in a fresh wazero
@@ -86,10 +88,13 @@ func New(ctx context.Context) (*Engine, error) {
 		rewrite: mod.ExportedFunction("rewrite"),
 		merge:   mod.ExportedFunction("merge"),
 		valid:   mod.ExportedFunction("validate"),
+		mint:    mod.ExportedFunction("mint"),
+		refire:  mod.ExportedFunction("refire"),
 	}
 	for name, fn := range map[string]api.Function{
 		"alloc": e.alloc, "dealloc": e.dealloc, "project": e.project,
 		"rewrite": e.rewrite, "merge": e.merge, "validate": e.valid,
+		"mint": e.mint, "refire": e.refire,
 	} {
 		if fn == nil {
 			_ = runtime.Close(ctx)
@@ -222,6 +227,128 @@ func (e *Engine) Validate(ctx context.Context, policyJSON, upstreamJSON []byte) 
 	return err
 }
 
+// --- Ephemeral mint / refire (SPEC.md §8.2) ---
+
+// Mint mints an ephemeral per-agent projection in code and returns the recorded
+// MintRecord as JSON (SPEC.md §8.1, §8.2).
+//
+// runID names the run; baseJSON is the integrator's sealed-ceiling Policy;
+// dynamicJSON is an optional per-agent narrowing overlay (pass nil/empty for
+// none — e.g. a `path` constraint scoping a subagent to the exact files it may
+// touch); upstreamJSON is the UpstreamCommand (`{"command","args","env"}`) that
+// launches the upstream this projection wraps. The returned JSON is a MintRecord
+// (resolved policy + provenance) the app persists wherever it likes and later
+// hands to Refire to reproduce the same server. The overlay may only NARROW the
+// base; any widening (re-add a dropped tool, loosen a constraint, unpin) returns
+// an error — this merge is the sandbox enforcement (SPEC.md §5.2). Pure: no LLM,
+// no clock, no disk, so identical inputs mint a byte-identical record.
+func (e *Engine) Mint(ctx context.Context, runID string, baseJSON, dynamicJSON, upstreamJSON []byte) ([]byte, error) {
+	runIDJSON, err := json.Marshal(runID)
+	if err != nil {
+		return nil, fmt.Errorf("lagom: mint: %w", err)
+	}
+	in, err := envelope(map[string]json.RawMessage{
+		"run_id":   runIDJSON,
+		"base":     rawOrNull(baseJSON),
+		"dynamic":  rawOrNull(dynamicJSON),
+		"upstream": rawOrNull(upstreamJSON),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lagom: mint: %w", err)
+	}
+	return e.call(ctx, e.mint, "mint", in)
+}
+
+// Refire re-mints the recorded resolved policy from a persisted MintRecord
+// (SPEC.md §8.2).
+//
+// recordJSON is a MintRecord (as returned by Mint). The returned JSON is the
+// ResolvedPolicy (`{"policy","upstream"}`) ready to serve — the exact projection
+// the original run had, reproduced without re-resolution even if the source
+// config has since changed. A malformed record returns an error.
+func (e *Engine) Refire(ctx context.Context, recordJSON []byte) ([]byte, error) {
+	in, err := envelope(map[string]json.RawMessage{
+		"record": rawOrNull(recordJSON),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lagom: refire: %w", err)
+	}
+	return e.call(ctx, e.refire, "refire", in)
+}
+
+// --- Guard: the brandable one-call helper (SPEC.md §2, §7.2) ---
+
+// Guard is the ergonomic one-call helper an app wires a slim, branded MCP
+// through. Construct one with NewGuard from the app's full tool defs plus a
+// policy; it projects the slim downstream surface once (SlimDefs) and gates
+// every incoming tools/call (Gate) — so the app registers slim tools and gates
+// calls without ever touching Project/Rewrite plumbing or threading the policy
+// at each call site.
+//
+// lagom stays invisible: all branding (downstream tool names via rename, slim
+// docs via description override, which tools exist via drop/default_presence)
+// lives in the policy the app supplies. The app reads the policy from wherever
+// it likes; Guard reads nothing itself. This mirrors lagom_core::Guard and the
+// Python/Node Guard exactly (NO DRIFT).
+//
+// A Guard holds a reference to an Engine and is safe for concurrent use to the
+// same extent the Engine is (each Gate serializes on the Engine's mutex).
+type Guard struct {
+	eng      *Engine
+	policy   []byte
+	slimDefs []byte
+}
+
+// NewGuard builds a guard over the shared Engine from the upstream tool defs and
+// the policy that narrows them. upstreamJSON is the app's full tools/list array
+// as JSON; policyJSON is a lagom-core Policy as JSON (from the app's own config,
+// a builder, or a literal). The slim surface is projected once here, so a
+// malformed input or a projection failure surfaces immediately as an error
+// rather than at first use. Use NewGuardWith to bind a dedicated Engine.
+func NewGuard(ctx context.Context, upstreamJSON, policyJSON []byte) (*Guard, error) {
+	e, err := shared(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return NewGuardWith(ctx, e, upstreamJSON, policyJSON)
+}
+
+// NewGuardWith builds a guard bound to a specific Engine (for parallelism: each
+// Engine owns its own linear memory). See NewGuard.
+func NewGuardWith(ctx context.Context, e *Engine, upstreamJSON, policyJSON []byte) (*Guard, error) {
+	policy := append([]byte(nil), rawOrNull(policyJSON)...)
+	slim, err := e.Project(ctx, upstreamJSON, policy)
+	if err != nil {
+		return nil, fmt.Errorf("lagom: guard: %w", err)
+	}
+	return &Guard{eng: e, policy: policy, slimDefs: slim}, nil
+}
+
+// SlimDefs returns the projected, branded downstream tool defs as JSON — the
+// array to advertise as tools/list. Tools dropped, pinned args pruned, names
+// renamed and descriptions overridden per the policy. The returned slice is the
+// Guard's own buffer; treat it as read-only.
+func (g *Guard) SlimDefs() []byte {
+	return g.slimDefs
+}
+
+// Gate gates one incoming downstream tools/call. callJSON uses the downstream
+// (post-rename) tool name and the args the agent supplied through the slim
+// schema. It returns the upstream call to forward as JSON — pinned values
+// injected, defaults filled, the name mapped back to upstream — or an error
+// (unknown/dropped tool, violated constraint) carrying the reason to annotate
+// back to the agent (SPEC.md §9.1 — never swallow).
+func (g *Guard) Gate(ctx context.Context, callJSON []byte) ([]byte, error) {
+	return g.eng.Rewrite(ctx, callJSON, g.policy)
+}
+
+// Policy returns the frozen policy JSON this guard enforces (e.g. to Validate it
+// against a freshly probed upstream). The returned slice is the Guard's own
+// buffer; treat it as read-only.
+func (g *Guard) Policy() []byte {
+	return g.policy
+}
+
 // envelope marshals a named-argument object into the single JSON buffer each
 // wasm operation expects.
 func envelope(fields map[string]json.RawMessage) ([]byte, error) {
@@ -293,4 +420,23 @@ func Validate(ctx context.Context, policyJSON, upstreamJSON []byte) error {
 		return err
 	}
 	return e.Validate(ctx, policyJSON, upstreamJSON)
+}
+
+// Mint mints an ephemeral projection using the shared Engine. See Engine.Mint.
+func Mint(ctx context.Context, runID string, baseJSON, dynamicJSON, upstreamJSON []byte) ([]byte, error) {
+	e, err := shared(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return e.Mint(ctx, runID, baseJSON, dynamicJSON, upstreamJSON)
+}
+
+// Refire re-mints a recorded resolved policy using the shared Engine. See
+// Engine.Refire.
+func Refire(ctx context.Context, recordJSON []byte) ([]byte, error) {
+	e, err := shared(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return e.Refire(ctx, recordJSON)
 }

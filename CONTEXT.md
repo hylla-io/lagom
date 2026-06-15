@@ -90,8 +90,9 @@ _Avoid_: plugin, prompt, template (use "skill").
 
 **Face**:
 One of lagom's delivery surfaces over the single Rust core: the CLI (out-of-process
-stdio proxy), the language **bindings** (Python wheel, Go module), and the wasm
-face. None is primary; all consume the same transport-less core (ADR-0001).
+stdio proxy), the language **bindings** (Python wheel, Node/TS addon, Go module),
+and the wasm face. None is primary; all consume the same transport-less core
+(ADR-0001).
 _Avoid_: frontend, adapter (use "face" for the delivery-surface sense).
 
 **wasm ABI**:
@@ -108,6 +109,30 @@ to wasm and runs it in-process via **wazero** (pure Go, no cgo) — so a consume
 gets the whole `project`/`rewrite`/`merge`/`validate` engine from a single
 `go get`, no separate binary and no C toolchain.
 _Avoid_: Go bridge, cgo binding (use "Go binding" / "lagom-go").
+
+**Node binding (lagom-node)**:
+The Node.js / TypeScript binding (`@hylla-io/lagom`), a native addon built with
+**napi-rs** that ships a generated `index.js` + `index.d.ts` so it is fully typed
+out of the box. A thin in-process skin over the same `lagom-core`, in capability
+parity with the Python and Go bindings (same JSON-in / JSON-out contract, NO
+DRIFT). Built/smoke-tested via `just node-build` / `just node-test`.
+_Avoid_: JS binding, TS shim (use "Node binding" / "lagom-node"; "TS binding"
+when the typed surface is the point).
+
+**Guard**:
+lagom's brandable one-call helper (`lagom_core::Guard`, mirrored as `lagom.Guard`
+in Python, `new Guard(...)` in Node/TS, `lagom.NewGuard(...)` in Go). It pairs an
+upstream tool surface with a frozen `Policy` so an integrator wires a slim,
+branded MCP without touching the `project`/`rewrite` plumbing: `slim_defs()` /
+`slimDefs()` / `SlimDefs()` returns the projected (branded) downstream
+`tools/list`, and `gate(call)` rewrites each incoming `tools/call` back to the
+upstream or rejects it. All branding (renamed names, override docs, dropped
+tools) lives in the supplied `Policy`; the helper reads nothing itself. Mirrored
+byte-for-byte in every binding (NO DRIFT). The wasm face exposes Guard via the Go
+binding's in-language re-implementation over the wasm `project`/`rewrite`
+primitives rather than as a wasm export (the JSON-in/JSON-out ABI cannot hand
+back a Rust struct).
+_Avoid_: wrapper, gatekeeper, facade (use "Guard").
 
 ## Resolved architecture (see docs/adr/ for rationale)
 

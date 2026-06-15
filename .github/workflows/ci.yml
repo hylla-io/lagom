@@ -44,6 +44,30 @@ jobs:
       - name: just py
         run: just py
 
+  # The Node/TypeScript binding (lagom-node) is likewise excluded from the
+  # workspace gate: it is a napi-rs cdylib (`.node` addon) built by the napi CLI,
+  # not by `cargo build --all`. This job gates it separately so a napi regression
+  # fails CI: fmt-check + clippy on the library surface (`just node-check`), then a
+  # napi build + Node smoke test (`just node-test`) that imports the addon and
+  # asserts project() drops a tool + pins/hides an arg and rewrite() rejects an
+  # out-of-enum call — the same parity contract as the Python smoke test.
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: just node-check
+        run: just node-check
+      - name: just node-test
+        run: just node-test
+
   # The wasm/Go face (lagom-wasm + go/) is also outside the workspace gate:
   # lagom-wasm targets wasm32 (its memory ABI is only meaningful there) and the
   # Go module runs the embedded blob via wazero. This job rebuilds the wasm
@@ -67,3 +91,5 @@ jobs:
         run: just wasm
       - name: go tests (CGO-free)
         run: just go-test
+      - name: mcp-go consumption examples (CGO-free)
+        run: just examples

@@ -1,0 +1,7 @@
+default-presence = "drop"
+[tools."echo"]
+presence = "keep"
+description = "echo tool"
+[tools."get-annotated-message"]
+presence = "keep"
+description = "get-annotated-message tool"

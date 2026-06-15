@@ -1,0 +1,38 @@
+[package]
+name = "lagom-node"
+description = "Node.js/TypeScript binding (napi-rs) exposing lagom's project/rewrite core."
+# Excluded from the workspace (see root Cargo.toml): a napi-rs cdylib produces a
+# `.node` addon and is built by the napi CLI (`just node-build`), not by
+# `cargo build --all`. Keeping it out of the default workspace build mirrors
+# `lagom-py` and keeps the `just ci` gate green on machines without the napi
+# toolchain. Because it is excluded it cannot inherit `[workspace.package]`, so
+# these are set explicitly.
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/hylla-io/lagom"
+rust-version = "1.96"
+
+[lib]
+# cdylib for the Node addon (`.node`); rlib so the engine glue can still be
+# unit-tested with `cargo test` without Node present.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lagom-core = { path = "../lagom-core" }
+# The spawned-process face (`mintStdioServer`) reuses the native stdio proxy +
+# minting from lagom-proxy rather than reimplementing transport in the binding.
+lagom-proxy = { path = "../lagom-proxy" }
+# The optional audit path on `mintStdioServer` opens an append-only JSONL log and
+# routes through `serve_audited`, mirroring the CLI's `--audit` flag.
+lagom-audit = { path = "../lagom-audit" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The blocking stdio serve path drives a current-thread tokio runtime, exactly
+# like the Python binding's `mint_stdio_server`.
+tokio = { version = "1", features = ["rt", "macros"] }
+napi = { version = "3", default-features = false, features = ["napi9"] }
+napi-derive = "3"
+
+[build-dependencies]
+napi-build = "2"

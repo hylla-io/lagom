@@ -83,8 +83,8 @@ type SharedAudit = Arc<Mutex<Option<AuditLog>>>;
 /// to project its surface. Dropping it tears the child down (`SPEC.md` §10).
 ///
 /// The child's stdio is taken at spawn-and-validate time: the upstream writer
-/// ([`Self::up_stdin`]) and the **already-buffered** upstream reader
-/// ([`Self::up_reader`]) are held here so the same reader used for the
+/// (`up_stdin`) and the **already-buffered** upstream reader (`up_reader`) are
+/// held here so the same reader used for the
 /// `initialize` + `tools/list` drift probe is threaded straight into the pump —
 /// no throwaway [`BufReader`] is created over the child's stdout twice, so bytes
 /// the probe buffered past its response newline are never dropped.

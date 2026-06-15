@@ -18,7 +18,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use lagom_core::{Policy, ToolCall, ToolDef};
+use lagom_core::{MintRecord, Policy, ToolCall, ToolDef};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,6 +46,16 @@ pub enum AuditError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuditEvent {
+    /// The full mint record — resolved policy **plus** provenance (the base
+    /// profile, overlay config paths, dynamic inputs, and upstream command) —
+    /// persisted at session start so the run can be **refired** from its own
+    /// trace (`SPEC.md` §8.2). The richest refire basis: where `OriginalDefs` and
+    /// `ResolvedPolicy` capture what the run saw, `Mint` captures the provenance
+    /// that produced it.
+    Mint {
+        /// The recorded mint, including its `run_id`.
+        record: MintRecord,
+    },
     /// The original upstream tool surface, captured at mint time.
     OriginalDefs {
         /// The run this mint belongs to.
@@ -142,9 +152,31 @@ mod tests {
 
     use lagom_core::policy::Policy;
     use lagom_core::tooldef::{ToolCall, ToolDef};
+    use lagom_core::{PolicySources, ResolvedPolicy, UpstreamCommand};
     use serde_json::json;
 
     use super::*;
+
+    /// A sample mint record for the [`AuditEvent::Mint`] coverage.
+    fn sample_mint() -> MintRecord {
+        let upstream = UpstreamCommand {
+            command: "srv".into(),
+            args: vec!["-y".into()],
+            env: vec![],
+        };
+        MintRecord {
+            run_id: "run-1".into(),
+            sources: PolicySources {
+                config_paths: vec!["lagom.toml".into()],
+                upstream: upstream.clone(),
+                dynamic_inputs: serde_json::Value::Null,
+            },
+            resolved: ResolvedPolicy {
+                policy: Policy::default(),
+                upstream,
+            },
+        }
+    }
 
     /// A unique scratch path under the OS temp dir, removed if it already exists.
     fn temp_path(tag: &str) -> PathBuf {
@@ -174,6 +206,9 @@ mod tests {
         let projected = ToolCall::new("read", json!({"path": "a.txt"}));
         let upstream = ToolCall::new("fs.read", json!({"path": "a.txt", "root": "/repo"}));
         vec![
+            AuditEvent::Mint {
+                record: sample_mint(),
+            },
             AuditEvent::OriginalDefs {
                 run_id: run_id.clone(),
                 defs: vec![def],
@@ -211,6 +246,12 @@ mod tests {
     #[test]
     fn each_variant_tags_its_kind() {
         let cases = [
+            (
+                AuditEvent::Mint {
+                    record: sample_mint(),
+                },
+                "mint",
+            ),
             (
                 AuditEvent::OriginalDefs {
                     run_id: "r".into(),

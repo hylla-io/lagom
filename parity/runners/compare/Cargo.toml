@@ -1,0 +1,20 @@
+# Cross-binding parity comparator (the NO-DRIFT guard's verdict step). Reads each
+# face's result map (produced by its runner) and asserts byte-identical ok-JSON
+# payloads + identical ok/err classification across all faces, against the Rust
+# core reference. Standalone crate (empty [workspace]) so it never alters the
+# shipped workspace.
+[package]
+name = "lagom-parity-compare"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "lagom-parity-compare"
+path = "main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[workspace]

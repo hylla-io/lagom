@@ -29,9 +29,10 @@ One **Rust core** — a transport-less, side-effect-free transform + policy engi
 - **CLI** — standalone binary; out-of-process stdio proxy; harness-agnostic
   drop-in. Wraps servers for harnesses we don't control.
 - **Bindings** — the compiled core shipped as a normal project dependency
-  (Python wheel via PyO3/maturin, Node addon via napi-rs, Rust crate, Go via
-  wasm+wazero). Exposes `project`/`rewrite` (in-process agents) and
-  `mint_stdio_server` (spawned agent processes).
+  (Python wheel via PyO3/maturin, Node/TS addon via napi-rs, Rust crate, Go via
+  wasm+wazero). Exposes `project`/`rewrite`/`merge`/`validate`, the pure
+  `mint`/`refire`, the brandable `Guard` helper (§7.2), and `mint_stdio_server`
+  (spawned agent processes).
 
 Dependency direction is fixed: everything depends on the pure core; nothing pure
 depends on transport. The stdio server and CLI are thin adapters.
@@ -129,15 +130,25 @@ Never: runtime LLM rewriting (breaks refire determinism) or regex prose surgery
 ## 7. Faces in detail
 
 - **7.1 CLI**: `lagom serve --config <f>` (stdio proxy: spawn upstream child,
-  serve projected surface); `lagom emit` (print harness snippet); `lagom
+  serve projected surface; `--audit <path>` persists a full mint record +
+  trace, §8.2); `lagom refire --record <path>` (re-mint an identical server from
+  a persisted mint record, §8.2); `lagom emit` (print harness snippet); `lagom
   validate` (policy vs upstream); `lagom emit-skills [dir]` (write the shipped
   skill markdown into a chosen directory — §12). *Superseded:* the originally
   planned `lagom describe --suggest` (dev-time doc aid) is **not shipped**; its
   intent — authoring slim/caveman descriptions — is delivered by the
   `lagom-slim-docs` skill (§12), emitted via `emit-skills`, which keeps lagom
   free of any built-in LLM call (§4.2 Tier 0).
-- **7.2 Bindings**: `project`, `rewrite`, `merge`, `validate`,
-  `mint_stdio_server(policy)`. Typed `Policy` builder per language.
+- **7.2 Bindings**: `project`, `rewrite`, `merge`, `validate`, the pure
+  ephemeral `mint(run_id, base, dynamic) -> MintRecord` / `refire(record) ->
+  ResolvedPolicy` (§8.2), the brandable **`Guard`** helper (§7.4), and
+  `mint_stdio_server(policy)`. Typed `Policy` builder per language. Shipped
+  bindings: **Python** (PyO3/maturin wheel) and **Node/TS** (napi-rs addon, with
+  generated `index.d.ts` so it is typed out of the box) for in-process and
+  spawned-process agents, plus the **Go** binding (§7.3, wasm+wazero, pure-compute
+  ops + an in-language `Guard`). All bindings are a thin skin over the one core
+  and hold **byte-identical capability parity (NO DRIFT)** — proven by the
+  cross-binding parity guard (`parity/`, run via `just parity`).
 - **7.3 wasm / Go (shipped)**: the transport-less core
   (`project`/`rewrite`/`merge`/`validate`) compiled to `wasm32-unknown-unknown`
   (`lagom-wasm` crate) and run via **wazero** in Go (no cgo). Pure compute only —
@@ -149,6 +160,22 @@ Never: runtime LLM rewriting (breaks refire determinism) or regex prose surgery
   `lagom-go` module (`github.com/hylla-io/lagom/go`) `go:embed`s the built
   `.wasm` so a consumer gets the whole engine from a single `go get` — no
   separate binary, no C toolchain.
+- **7.4 `Guard` — the brandable one-call helper**: pairs an upstream tool
+  surface with a frozen `Policy` so an integrator wires a slim, **branded** MCP
+  in two calls — `slim_defs()` returns the projected (branded) downstream
+  `tools/list` (computed once at construction), and `gate(call)` rewrites each
+  incoming `tools/call` back to upstream (or rejects it) — without the app ever
+  touching the `project`/`rewrite` plumbing or threading the policy through each
+  call. All branding (renamed tool names, override descriptions, dropped tools)
+  lives in the `Policy` the app supplies; the helper reads nothing itself
+  (no `lagom.toml`, no disk, no env), so lagom stays invisible (§2, the first
+  consumer `sand` needs lagom-as-a-lib to be stupid-easy). Shipped in every
+  binding with byte-identical behavior (NO DRIFT): `lagom_core::Guard` (Rust),
+  `lagom.Guard` (Python), `new Guard(...)` (Node/TS), `lagom.NewGuard(...)` (Go).
+  The wasm face exposes no `Guard` export — the JSON-in/JSON-out ABI cannot hand
+  back a Rust struct — so the Go binding **re-implements `Guard` in-language**
+  over the wasm `project`/`rewrite` primitives, preserving the four-binding
+  parity (this is intentional layering, not a missing wasm export).
 
 ## 8. Dynamic policy & ephemeral projections
 
@@ -185,9 +212,11 @@ In the first slice:
 - lagom **spawns the upstream** as a child process (config carries its launch
   command/args/env); minimal lifecycle (spawn on init, teardown on exit, crashes
   loud).
-- Faces: CLI + the Python binding proving the embed model; the **wasm/Go face
-  (§7.3) is shipped in this slice** — the core compiled to wasm32 and embedded in
-  the `lagom-go` module via wazero (no cgo).
+- Faces: CLI + the Python binding proving the embed model; the **Node/TS binding
+  (napi-rs) ships in this slice** at full capability parity with Python; the
+  **wasm/Go face (§7.3) is shipped in this slice** — the core compiled to wasm32
+  and embedded in the `lagom-go` module via wazero (no cgo). Cross-binding parity
+  (Rust/Go/Py/TS) is guarded by `parity/` (`just parity`).
 
 ## 11. Deferred (planned, not in first slice)
 
@@ -222,8 +251,8 @@ possibly an opt-in).
 
 - Exact `lagom.toml` schema surface (key names) — settle at builder design.
 - Audit log on-disk shape (default JSONL at a configurable path) — settle at §9.
-- Binding packaging matrix beyond the shipped set (Python wheel + Go-via-wasm
-  ship in 0.1.0; Node addon and a published Rust crate are 0.1.x).
+- Binding packaging matrix beyond the shipped set (Python wheel, Node/TS addon,
+  and Go-via-wasm ship in 0.1.0; a *published* Rust crate is 0.1.x).
 
 *Resolved since first draft:* MCP wire = hand-rolled selective-interception
 proxy (not `rmcp`); adapter I/O = tokio; doc-slimming = shipped skill (§12), not

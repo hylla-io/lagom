@@ -1,0 +1,7 @@
+default-presence = "drop"
+[tools."create_entities"]
+presence = "keep"
+description = "create_entities tool"
+[tools."create_relations"]
+presence = "keep"
+description = "create_relations tool"

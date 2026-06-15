@@ -54,6 +54,34 @@ until it is green.
 - **Tests**: co-located `#[cfg(test)]` modules, table-driven and
   behavior-oriented. TDD where practical; ship small tested increments.
 
+## Binding parity & docs — NO DRIFT
+
+`lagom-core` is the single source of behavior; every face (CLI, Python, Go/wasm,
+TS) is a thin skin over it. **Go is the canonical full-test surface** — it gets
+the deepest e2e/battle tests. After ANY behavior/capability change or finding on
+the Go side, **propagate it to the Python and TS bindings and the core** so all
+bindings stay in **capability parity — zero drift**. A capability/behavior present
+in one binding but missing in another is a **bug**, not a backlog item.
+
+A **TS binding** (napi-rs) is required and smoke-tested the same way as Python
+(build the artifact, import it, assert a `project()` drop + pin).
+
+Docs must be **full, accurate, and current across every surface at all times**:
+rustdoc (`///`), `go doc`, Python docstrings, TS types/JSDoc, and the README
+(CLI + each binding's `go get`/`pip`/`npm` usage + the branding pattern). No
+binding is "done" until it is parity-tested AND doc-complete.
+
+## Benchmarks & claims — REAL data only
+
+Any performance / token-savings / comparison claim MUST be backed by **real
+measurement with real instruments** and **logged to a reproducible store** — never
+asserted. Measure with the actual tokenizer (Anthropic `count_tokens`), real MCP
+servers, and real agents. The pattern is `bench/`: a re-runnable harness
+(`bench.py`) that writes `results.jsonl` (every data point + exact inputs/policy/
+method), `results.csv` (graph-ready), `REPORT.md` (table + totals + methodology),
+`raw/` (captured surfaces), and a chart generated FROM the logged data. Graphs are
+generated from the data file, not by hand. No claim ships without a re-run path.
+
 ## Evidence sources (Rust)
 
 Hylla and mage do not apply here (Hylla is Go-only; ADR-0002 dropped both).

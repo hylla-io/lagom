@@ -10,7 +10,11 @@ members = [
 # `cargo build --all` would need a Python interpreter to link against and would
 # break the `just ci` gate on machines/CI without one. It is therefore EXCLUDED
 # from the default workspace build and built separately via `just py` (maturin).
-exclude = ["crates/lagom-py", "crates/lagom-wasm"]
+# lagom-wasm targets wasm32 only (built via `just wasm`); lagom-node is a napi-rs
+# cdylib (`.node` addon) built by the napi CLI (`just node-build`) — both are
+# likewise excluded so `cargo build --all` / `just ci` stay green without their
+# extra toolchains.
+exclude = ["crates/lagom-py", "crates/lagom-wasm", "crates/lagom-node"]
 resolver = "3"
 
 [workspace.package]

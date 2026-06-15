@@ -16,7 +16,6 @@
 use std::path::PathBuf;
 
 use lagom_core::Policy;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod bridge;
@@ -24,6 +23,13 @@ pub mod skills;
 
 pub use bridge::{Server, serve, serve_audited};
 pub use skills::SHIPPED_SKILLS;
+
+// The mint-record data types and the pure `refire` are owned by `lagom-core`
+// (transport-less, wasm-safe) and re-exported here so every native caller — the
+// CLI, the Python/Node bindings — keeps the historical `lagom_proxy::{…}` paths.
+// Only the *file-loading* mint (resolving `config_paths` off disk) lives in this
+// crate; the in-code `lagom_core::mint` and `lagom_core::refire` are pure.
+pub use lagom_core::{MintRecord, PolicySources, ResolvedPolicy, UpstreamCommand, refire};
 
 /// Test-support seams: spawn-and-validate a [`Server`] without running it, so
 /// integration tests can drive [`Server::run_with`] against in-memory streams.
@@ -65,74 +71,6 @@ pub enum ProxyError {
     /// Writing the mint record to the audit log failed.
     #[error("audit: {0}")]
     Audit(#[from] lagom_audit::AuditError),
-}
-
-/// How to launch the upstream MCP server as a child process (`SPEC.md` §10).
-///
-/// The config carries the command, args, and environment; lagom spawns it on
-/// `initialize` and tears it down on exit.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UpstreamCommand {
-    /// The executable to run.
-    pub command: String,
-    /// Arguments passed to the executable.
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// Environment variables to set for the child.
-    #[serde(default)]
-    pub env: Vec<(String, String)>,
-}
-
-/// The provenance of a mint: where the resolved policy came from (`SPEC.md`
-/// §8.2). Layered config paths, the upstream launch command, plus any dynamic
-/// mint-time inputs.
-///
-/// These are captured verbatim so the mint is reproducible: the same
-/// `PolicySources` resolve to a byte-identical [`ResolvedPolicy`] (`SPEC.md`
-/// §5.4), the precondition for [`refire`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PolicySources {
-    /// Config files composed in precedence order (base first, overlays after).
-    /// The lowest-precedence path is the integrator base (the sealed ceiling);
-    /// each later path narrows it via the narrow-only [`lagom_core::merge`]
-    /// (`SPEC.md` §5.2, §6.3).
-    #[serde(default)]
-    pub config_paths: Vec<PathBuf>,
-    /// How to launch the upstream this projection wraps (`SPEC.md` §10). Carried
-    /// in the sources so refire reconstructs the same child process.
-    pub upstream: UpstreamCommand,
-    /// Dynamic mint-time scoping inputs (e.g. file paths a subagent may touch),
-    /// captured verbatim so the mint is reproducible (`SPEC.md` §8.1, §5.4).
-    ///
-    /// Reserved for the builder face's dynamic scoping; the `lagom.toml` face
-    /// resolves entirely from `config_paths`. Stored in the [`MintRecord`] for
-    /// provenance regardless.
-    #[serde(default)]
-    pub dynamic_inputs: serde_json::Value,
-}
-
-/// A fully-resolved projection spec ready to serve — the deterministic output
-/// of [`mint`] (`SPEC.md` §8.2). Validated against the upstream before use.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResolvedPolicy {
-    /// The composed, narrow-only-merged policy the engine consumes.
-    pub policy: Policy,
-    /// How to launch the upstream this policy projects.
-    pub upstream: UpstreamCommand,
-}
-
-/// A recorded mint: the resolved policy plus the provenance that produced it.
-///
-/// Persisted (via [`lagom_audit`]) so a run can be **refired** — re-minted into
-/// an identical server (`SPEC.md` §8.2).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MintRecord {
-    /// The run this mint belongs to.
-    pub run_id: String,
-    /// The provenance that produced [`Self::resolved`].
-    pub sources: PolicySources,
-    /// The deterministic resolved policy.
-    pub resolved: ResolvedPolicy,
 }
 
 /// Resolve a stack of policy sources into a single [`ResolvedPolicy`].
@@ -205,17 +143,6 @@ pub fn mint_record(
     })
 }
 
-/// Re-mint the resolved policy from a previously recorded [`MintRecord`]
-/// (refire, `SPEC.md` §8.2).
-///
-/// Bypasses re-resolution: the record already holds the deterministic resolved
-/// policy, so refire reproduces the exact projection the run had before, even if
-/// the on-disk config has since changed. Returns the [`ResolvedPolicy`] ready to
-/// hand to [`serve`].
-pub fn refire(record: &MintRecord) -> ResolvedPolicy {
-    record.resolved.clone()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -245,10 +172,12 @@ mod tests {
             Self { path }
         }
 
-        fn write(&self, name: &str, body: &str) -> PathBuf {
+        /// Write a config file and return its path as a `String` (the
+        /// [`PolicySources::config_paths`] element type).
+        fn write(&self, name: &str, body: &str) -> String {
             let p = self.path.join(name);
             std::fs::write(&p, body).unwrap();
-            p
+            p.to_string_lossy().into_owned()
         }
     }
 
