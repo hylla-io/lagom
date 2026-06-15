@@ -6,7 +6,8 @@ Single source of "where we are" for a fresh session or the sand team. Pairs with
 `docs/SAND_GETTING_STARTED.md` (sand consume + e2e runbook),
 `docs/SAND_LAGOM_HANDOFF.md` (caveman contract), `docs/POC_FINDINGS.md`
 (real-agent results), `bench/` (real token numbers), `bin/lagom-codex-poc.sh`
-(working codex confinement run), `go/examples/branded.go` (consumer pattern).
+(working codex confinement run), `go/examples/branded.go` (consumer pattern),
+`SAND_LAGOM_FINDINGS.md` (sand's real-consumer proof: joint e2e GREEN + numbers).
 
 ## ON RESUME (lossless pickup)
 
@@ -14,13 +15,14 @@ Single source of "where we are" for a fresh session or the sand team. Pairs with
 may lag). 3. `just ci && just go-test && just node-test && just py-test &&
 just parity && just examples` to confirm everything is still green. 4. Durable
 behavioral rules are in `~/.claude` memory (`binding-parity-and-docs`,
-`always-real-benchmarks`, `lagom-go-get-consumption`) + this repo's `CLAUDE.md`.
+`always-real-benchmarks`, `lagom-go-get-consumption`,
+`bare-convert-claude-hook-deadlock`) + this repo's `CLAUDE.md`.
 The reproducible techniques are encoded in `bin/*.sh` + `bench/*.py` — run them,
 don't reconstruct them.
 
 ## STATUS (2026-06-15)
 
-- lagom **v0.1.0, UNRELEASED**. Pushed to `main` at **`be8cbd3`** (or later — `git log`) (`github.com/hylla-io/lagom`, private).
+- lagom **v0.1.0, UNRELEASED**. Pushed to `main` at **`a7a748e`** (or later — `git log`) (`github.com/hylla-io/lagom`, private).
 - One Rust core (`lagom-core`) + faces: **CLI**, **Python** (PyO3), **Go** (wasm+wazero, `go get`), **TS/Node** (napi-rs).
 - All 6 gates green (verified): `just ci`, `just go-test`, `just node-test`, `just py-test`, `just parity` (zero drift), `just examples`.
 - Real token savings (Anthropic `count_tokens`, logged in `bench/`): **~52% avg** tool-surface reduction across real MCP servers (everything −64%, filesystem −67%, memory −50%, sequential-thinking −43% via caveman docs).
@@ -28,7 +30,7 @@ don't reconstruct them.
 ## HOW SAND CONSUMES lagom (no release needed)
 
 ```sh
-GOPRIVATE='github.com/hylla-io/*' go get github.com/hylla-io/lagom/go@main   # or @04c7e5a
+GOPRIVATE='github.com/hylla-io/*' go get github.com/hylla-io/lagom/go@main   # or @<commit> from git log
 ```
 ```go
 import lagom "github.com/hylla-io/lagom/go"
@@ -44,6 +46,7 @@ Pattern to copy: `go/examples/branded.go` (mcp-go server gated by lagom-go, prov
 - **codex exec e2e GREEN** (`bin/lagom-codex-poc.sh`): real headless agent sees ONLY the slim tool, "secret tool not available", pinned `token=LOCKED` injected (agent never set it), clean teardown. codex connects MCP synchronously — the proven headless confined vehicle.
 - `go get` consumption proven (lagom-demo pulled a real pushed commit; mcp-go e2e green).
 - Token savings real + logged (`bench/results.jsonl|.csv|REPORT.md|raw/`, chart `bench/savings.svg`, re-run `python3 bench/bench.py`).
+- **Joint sand e2e PROVEN** (`SAND_LAGOM_FINDINGS.md`): sand `go get`s lagom-go at `a7a748e` (pseudo-version `v0.0.0-20260615055941-a7a748ef4e56`), wraps `lagom.NewGuard` in its own mcp-go server (`sand mcp --profile`), and a **real headless codex agent** confined to it proved all four concepts through a real upstream + real stdio lifecycle: slim surface only, dropped→"not available", pin injected downstream, no leaked procs. Real numbers through sand's shipped binary: **54.8%** demo-server tool-surface cut (matches lagom's ~52%) + per-role 27.8–66.1% on real ta+hylla upstreams.
 
 ## VEHICLE GUIDANCE (for sand)
 
@@ -53,10 +56,18 @@ Pattern to copy: `go/examples/branded.go` (mcp-go server gated by lagom-go, prov
 
 ## WHAT'S LEFT (tracked)
 
-1. ~~Go `PolicyBuilder`~~ **DONE** (`go/builder.go` + tests; parity with py/ts). lagom-go now has full API parity. NOTE for sand: lagom's `ToolDef` field is `input_schema` (snake_case); MCP servers emit `inputSchema` — map it before `Project`/`NewGuard` (the `go/examples/branded.go` helper shows the one-line mapping). Candidate DX improvement: alias `inputSchema` in core `ToolDef`.
+1. ~~Go `PolicyBuilder`~~ **DONE**; ~~`inputSchema` core alias~~ **DONE**. lagom-go has full API parity. The #1 consumer gotcha is fixed in core: `ToolDef` now accepts both `inputSchema` (MCP camel) and `input_schema`, and normalizes missing/`null` schema to `{}` (`crates/lagom-core/src/tooldef.rs` + 5 tests; output unchanged canonical snake). Consumers pass the raw upstream `tools/list` with no shim — sand can delete `MapUpstreamDefs` after bumping its lagom pin. Propagated + parity-tested across Go/Py/TS.
+   - **dotted-name finding — DECIDED: do NOT hard-reject.** sand found the Anthropic tools API rejects dotted names (`^[a-zA-Z0-9_-]{1,64}$`). lagom must NOT make `rename`/`validate` reject dotted targets: MCP itself allows dots and hylla ships legal MCP tools named `hylla.artifact.list`, which work fine with non-Anthropic models. A hard check would break legitimate MCP usage. It is a *bench/consumer* concern (sanitize names only when calling Anthropic's `count_tokens`), already handled sand-side; documented, not enforced.
 2. **Per-binding real-MCP e2e + real numbers** for Python and TS (Go is proven). HOW: feed the real captured tool surfaces in `bench/raw/*.full.json` through `lagom-py.project` and `lagom-node.project`, assert byte-identical slim to the Rust/Go output (parity), and record token numbers per binding in `bench/`. (The `just parity` harness already proves byte-identical on synthetic fixtures; this extends it to real surfaces.)
-3. **Joint sand e2e**: once sand `go get`s lagom and stands up `sand mcp --profile`, run the real codex/agent E2E *through sand*, re-verify parity + correctness across binary + Go/Py/TS + Rust-lib.
+3. **Joint sand e2e** — **Go path DONE** (`SAND_LAGOM_FINDINGS.md`: real codex agent confined through `sand mcp`, all four concepts GREEN, real numbers logged). Remaining: prove the *same* through-a-real-consumer path for the binary + Py/TS/Rust-lib faces, and sand's TODO A/B billed-token cascade (full MCP vs sand-slimmed, from the dispatch trace) — the "undeniable" real-cost proof.
 4. **Release**: tag `v0.1.0` ONLY on the user's express word, AFTER full e2e proof. Until then, sand pins a pseudo-version (`@main`/`@<commit>`).
+
+### Still-open questions & known gaps (design + QA)
+
+Not blockers for sand consumption; routed here so nothing is lost.
+
+- **Design open questions** — `SPEC.md` §13: exact `lagom.toml` key surface (settle at builder design), audit-log on-disk shape (default JSONL, configurable path), binding packaging matrix beyond the shipped set (a *published* Rust crate is 0.1.x). §11 lists deferred capability (resource/prompt narrowing, HTTP/SSE transport, per-call auth hooks, upstream supervision).
+- **Open QA / coverage gaps** — `FEATURES.md` KNOWN GAPS. The two High sandbox escapes, the audit wiring, the real-upstream handshake, and the **JSON-RPC batch bypass** are all `[RESOLVED]` (batch now rejected with `-32600` + test). Genuinely still open: **wasm/Go face and `just parity` are not yet wired into CI** (local-only; risk = stale-wasm-blob drift). Treat the same way the `python` job resolved lagom-py's CI gap.
 
 ## ENV / GATES (gotchas)
 

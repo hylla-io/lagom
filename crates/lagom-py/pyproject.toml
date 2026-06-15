@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "lagom"
-description = "Python binding for lagom: serve narrowed projections of an upstream MCP server."
+description = "Python binding for lagom: serve narrowed projections of an upstream MCP server. Accepts the raw MCP tools/list (camelCase inputSchema or snake_case input_schema; missing/null schema normalizes to {})."
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",

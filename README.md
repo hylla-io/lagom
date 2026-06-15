@@ -71,6 +71,12 @@ import lagom  # exposes project, rewrite, merge, validate, mint, refire,
                # emit_skills
 ```
 
+The tool defs are read leniently, so you can pass the **raw upstream
+`tools/list`** straight in with no field-mapping shim: each tool's schema is
+accepted under either the MCP-native camelCase `inputSchema` or snake_case
+`input_schema`, and a missing or `null` schema normalizes to `{}`. The projected
+output is always canonical snake_case `input_schema`.
+
 ### Go (`go get`)
 
 The Go binding is the core compiled to wasm and run in-process via

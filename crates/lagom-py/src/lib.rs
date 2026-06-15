@@ -23,7 +23,12 @@
 //! The four pure operations take and return **JSON strings**: the upstream tool
 //! defs, the policy, and tool calls all cross the FFI boundary as JSON, keeping
 //! the binding decoupled from `lagom_core`'s Rust types and trivially mirrored in
-//! every other binding language. A failed parse, a [`lagom_core::Reject`], a
+//! every other binding language. Tool defs are read leniently, so the **raw
+//! upstream `tools/list`** can be passed straight in: each tool's schema is
+//! accepted under either the MCP-native camelCase `inputSchema` or snake_case
+//! `input_schema`, and a missing or `null` schema normalizes to `{}`; output is
+//! always canonical snake_case `input_schema`. A failed parse, a
+//! [`lagom_core::Reject`], a
 //! [`lagom_core::MergeError`], or a drift failure all surface as a Python
 //! `ValueError` carrying the engine's own message (`SPEC.md` §9.1 — never
 //! swallow).
@@ -64,6 +69,13 @@ fn dump_json<T: serde::Serialize>(value: &T) -> PyResult<String> {
 /// `policy_json` is a [`lagom_core::Policy`] as JSON (e.g. from
 /// `PolicyBuilder.build`). Returns the projected surface as a JSON array
 /// string — tools dropped, pinned args pruned from schemas, constraints applied.
+///
+/// The schema field is read leniently, so you can pass the **raw upstream
+/// `tools/list` straight through** with no field-mapping shim: each tool's
+/// schema is accepted under either the MCP-native camelCase `inputSchema` or
+/// snake_case `input_schema`, and a missing or `null` schema normalizes to `{}`.
+/// The projected output is always canonical snake_case `input_schema` (the
+/// downstream contract is unchanged).
 #[pyfunction]
 fn project(upstream_json: &str, policy_json: &str) -> PyResult<String> {
     let upstream: Vec<ToolDef> = parse_json("upstream tool defs", upstream_json)?;
@@ -511,6 +523,54 @@ mod tests {
         let props = &defs[0].input_schema["properties"];
         assert!(props.get("artifact").is_none(), "pinned arg must be pruned");
         assert!(props.get("query").is_some());
+    }
+
+    /// `project` accepts a RAW MCP `tools/list` surface with no field-mapping
+    /// shim: the MCP-native camelCase `inputSchema`, an explicit `"inputSchema":
+    /// null`, and a tool omitting the schema key entirely all deserialize, and
+    /// the projected output is always canonical snake_case `input_schema` (the
+    /// downstream contract is unchanged). Mirrors the core's lenient `ToolDef`
+    /// (NO DRIFT) so a consumer can hand lagom-py the upstream surface directly.
+    #[test]
+    fn project_accepts_raw_mcp_surface_emits_snake_case() {
+        let raw_mcp = json!([
+            {"name": "camel", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "nulled", "inputSchema": null},
+            {"name": "missing"}
+        ])
+        .to_string();
+        let policy = PolicyBuilder::new().build().unwrap();
+
+        let projected = project(&raw_mcp, &policy).unwrap();
+
+        // Output is canonical snake_case JSON: no camelCase key survives.
+        assert!(projected.contains("\"input_schema\""));
+        assert!(
+            !projected.contains("inputSchema"),
+            "projected output must be canonical snake_case, not camelCase"
+        );
+
+        let defs: Vec<ToolDef> = serde_json::from_str(&projected).unwrap();
+        assert_eq!(
+            defs.len(),
+            3,
+            "all three raw tools must survive passthrough"
+        );
+        assert_eq!(
+            defs[0].input_schema,
+            json!({"type": "object", "properties": {}})
+        );
+        // A null schema and a missing schema both normalize to {} (not null).
+        assert_eq!(
+            defs[1].input_schema,
+            json!({}),
+            "null schema normalizes to {{}}"
+        );
+        assert_eq!(
+            defs[2].input_schema,
+            json!({}),
+            "missing schema defaults to {{}}"
+        );
     }
 
     /// Rewrite injects the pinned value and a constraint violation raises.

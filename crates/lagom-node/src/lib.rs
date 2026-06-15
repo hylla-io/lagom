@@ -24,7 +24,11 @@
 //! defs, the policy, and tool calls all cross the FFI boundary as JSON, byte-for-
 //! byte the same shape as the Python and Go bindings (`input_schema`,
 //! `default_presence`, snake_case enum tags, `{"pin": …}` / `{"constrain":
-//! {"enum": …}}` arg policies). A failed parse, a [`lagom_core::Reject`], a
+//! {"enum": …}}` arg policies). Tool-def input is lenient: the core accepts both
+//! the MCP-native camelCase `inputSchema` and snake_case `input_schema` and
+//! normalizes a missing/`null` schema to `{}`, so the raw upstream `tools/list`
+//! can be passed straight through; the returned (downstream) surface always emits
+//! canonical snake_case `input_schema`. A failed parse, a [`lagom_core::Reject`], a
 //! [`lagom_core::MergeError`], or a drift failure all surface as a JavaScript
 //! `Error` carrying the engine's own message (`SPEC.md` §9.1 — never swallow).
 
@@ -65,6 +69,12 @@ fn dump_json<T: serde::Serialize>(value: &T) -> Result<String> {
 /// `policyJson` is a [`lagom_core::Policy`] as JSON (e.g. from
 /// `PolicyBuilder.build`). Returns the projected surface as a JSON array
 /// string — tools dropped, pinned args pruned from schemas, constraints applied.
+///
+/// Input parsing is lenient: the core accepts both the MCP-native camelCase
+/// `inputSchema` and snake_case `input_schema`, and normalizes a missing or
+/// JSON-`null` schema to `{}`, so you can pass the raw upstream `tools/list`
+/// straight through with no field-mapping shim. The returned surface stays
+/// canonical snake_case `input_schema` (the downstream contract is unchanged).
 #[napi]
 pub fn project(upstream_json: String, policy_json: String) -> Result<String> {
     let upstream: Vec<ToolDef> = parse_json("upstream tool defs", &upstream_json)?;

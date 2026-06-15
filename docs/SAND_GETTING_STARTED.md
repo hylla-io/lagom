@@ -55,12 +55,14 @@ rec, _ := lagom.Mint(ctx, "agent-7", baseJSON, dynamicJSON, upstreamJSON)
 resolved, _ := lagom.Refire(ctx, rec)
 ```
 
-### CRITICAL FIELD GOTCHA
-lagom `ToolDef` JSON uses **`input_schema`** (snake_case). MCP servers emit
-**`inputSchema`** (camel). MAP IT before passing to Project/NewGuard:
-each tool -> `{"name":..., "description":..., "input_schema": <the inputSchema>}`.
-copy the one-line mapping from `go/examples/branded.go` (`lagomDef`). this is the
-#1 thing that bites consumers.
+### FIELD NOTE (the old #1 gotcha — now fixed in core)
+lagom `ToolDef` now accepts **both** `inputSchema` (MCP camelCase) **and**
+`input_schema` (snake), and normalizes a missing or `null` schema to `{}`. So you
+can hand the **raw upstream `tools/list`** straight to `Project`/`NewGuard` with
+**no field-mapping shim** — pass MCP defs as-is. (Output is still canonical
+snake_case `input_schema`, unchanged.) sand's `MapUpstreamDefs` is therefore no
+longer required and can be deleted once sand bumps to the lagom commit carrying
+this change. Older lagom pins (≤`a7a748e`) still need the manual map.
 
 ## 4. THE PATTERN TO COPY
 

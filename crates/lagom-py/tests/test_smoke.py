@@ -169,6 +169,32 @@ def test_project_drops_tool_and_pins_arg():
     assert "query" in props, "unpinned arg must survive"
 
 
+def test_project_accepts_raw_mcp_surface():
+    """project() accepts a RAW upstream MCP `tools/list` with no field-mapping
+    shim: the MCP-native camelCase `inputSchema`, an explicit `inputSchema: null`,
+    and a tool omitting the schema key all succeed, and the projected output is
+    always canonical snake_case `input_schema` (NO DRIFT vs the core)."""
+    raw_mcp = json.dumps(
+        [
+            {"name": "camel", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "nulled", "inputSchema": None},
+            {"name": "missing"},
+        ]
+    )
+    policy = lagom.PolicyBuilder().build()  # passthrough: keep everything
+
+    raw_out = lagom.project(raw_mcp, policy)
+    assert "input_schema" in raw_out, "output must use canonical snake_case key"
+    assert "inputSchema" not in raw_out, "output must NOT carry the camelCase key"
+
+    projected = json.loads(raw_out)
+    assert [d["name"] for d in projected] == ["camel", "nulled", "missing"]
+    assert projected[0]["input_schema"] == {"type": "object", "properties": {}}
+    # null and missing both normalize to {} (never null, never absent).
+    assert projected[1]["input_schema"] == {}, "null schema normalizes to {}"
+    assert projected[2]["input_schema"] == {}, "missing schema defaults to {}"
+
+
 def test_rewrite_injects_pin():
     """rewrite injects the pinned value the agent never saw."""
     b = lagom.PolicyBuilder()

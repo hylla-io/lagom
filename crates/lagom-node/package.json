@@ -1,7 +1,7 @@
 {
   "name": "@hylla-io/lagom",
   "version": "0.1.0",
-  "description": "Node.js/TypeScript binding for lagom — narrow an upstream MCP server into a sealed, slimmed projection (project/rewrite/merge/validate).",
+  "description": "Node.js/TypeScript binding for lagom — narrow an upstream MCP server into a sealed, slimmed projection (project/rewrite/merge/validate). Accepts the raw upstream tools/list (camelCase inputSchema or snake_case input_schema; missing/null schema normalizes to {}); projects canonical snake_case input_schema.",
   "license": "MIT",
   "repository": {
     "type": "git",

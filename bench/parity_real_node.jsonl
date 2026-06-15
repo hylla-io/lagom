@@ -1,0 +1,6 @@
+{"_note":"Byte-identity parity of lagom-node project() vs the Rust-produced <server>.slim.json (the source of truth). Each row asserts the Node binding reproduces the Rust slim projection byte-for-byte once the core output is re-serialized into the MCP wire shape the stdio proxy emits (MCP-native camelCase inputSchema, description omitted when absent, alphabetical keys, 2-space indent). These are byte-identity results, NOT token counts."}
+{"server":"everything","full_tool_count":13,"slim_tool_count":2,"slim_byte_len":1187,"match":true}
+{"server":"everything-2","full_tool_count":13,"slim_tool_count":2,"slim_byte_len":1187,"match":true}
+{"server":"filesystem","full_tool_count":14,"slim_tool_count":2,"slim_byte_len":1701,"match":true}
+{"server":"memory","full_tool_count":9,"slim_tool_count":2,"slim_byte_len":2199,"match":true}
+{"server":"sequential-thinking","full_tool_count":1,"slim_tool_count":1,"slim_byte_len":4598,"match":true}

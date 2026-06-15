@@ -64,6 +64,12 @@ The package-level functions use a lazily-initialized shared `Engine`. Construct
 dedicated `Engine`s with `lagom.New(ctx)` for parallelism (each owns one wasm
 linear memory, so its calls are serialized under a mutex).
 
+**Raw MCP defs are accepted as-is.** lagom's `ToolDef` deserialization takes both
+the MCP-native camelCase `inputSchema` and snake `input_schema`, and normalizes a
+missing or `null` schema to `{}`. Hand the upstream `tools/list` straight to
+`Project`/`NewGuard` — no field-mapping shim. Projected output stays canonical
+snake_case `input_schema`.
+
 ## Typed policy authoring — `PolicyBuilder`
 
 Build a `Policy` fluently in Go (parity with the Python/TS builders):

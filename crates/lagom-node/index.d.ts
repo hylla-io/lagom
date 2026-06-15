@@ -170,6 +170,12 @@ export declare function mintStdioServer(policyJson: string, command: string, arg
  * `policyJson` is a [`lagom_core::Policy`] as JSON (e.g. from
  * `PolicyBuilder.build`). Returns the projected surface as a JSON array
  * string — tools dropped, pinned args pruned from schemas, constraints applied.
+ *
+ * Input parsing is lenient: the core accepts both the MCP-native camelCase
+ * `inputSchema` and snake_case `input_schema`, and normalizes a missing or
+ * JSON-`null` schema to `{}`, so you can pass the raw upstream `tools/list`
+ * straight through with no field-mapping shim. The returned surface stays
+ * canonical snake_case `input_schema` (the downstream contract is unchanged).
  */
 export declare function project(upstreamJson: string, policyJson: string): string
 

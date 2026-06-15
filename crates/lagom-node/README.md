@@ -25,6 +25,13 @@ tool calls), matching every other lagom binding. Engine rejections, merge
 widening, and drift all throw a JavaScript `Error` carrying the engine's own
 annotated message — never swallowed (`SPEC.md` §9.1).
 
+Tool-def input is **lenient**: the core accepts both the MCP-native camelCase
+`inputSchema` and snake_case `input_schema`, and normalizes a missing or
+JSON-`null` schema to `{}` — so you can hand `project`/`validate`/`Guard` the
+**raw upstream `tools/list`** directly, with no field-mapping shim. The projected
+(downstream) surface always emits canonical snake_case `input_schema`, so that
+contract is unchanged.
+
 ```ts
 import { project, rewrite, merge, validate, mint, refire, Guard, PolicyBuilder } from "@hylla-io/lagom";
 

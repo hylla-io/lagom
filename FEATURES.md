@@ -16,6 +16,14 @@ operations; compiles to native and (by construction) wasm. Done and green.
   (keep/drop), rename, description policy; per-arg pin / constrain / default /
   passthrough. *Why:* a single model both front-ends produce and the only thing
   the engine consumes, so the typed builder and `lagom.toml` cannot drift.
+- **Lenient `ToolDef` input (zero-shim consumption)** — deserialization accepts
+  both the MCP-native camelCase `inputSchema` and snake `input_schema`, and
+  normalizes a missing or JSON-`null` schema to `{}`; serialization always emits
+  canonical snake `input_schema`. *Why:* a consumer hands the raw upstream
+  `tools/list` straight to lagom with no field-mapping shim (the former #1
+  consumer gotcha, confirmed by the first real consumer — `SAND_LAGOM_FINDINGS.md`
+  §4) while the projected downstream contract stays stable. Tests co-located in
+  `crates/lagom-core/src/tooldef.rs`.
 - **`project(upstream_defs, policy) -> projected_defs`** (SPEC §4.1) — forward
   transform on the `inputSchema`: pin deletes the property from `properties` +
   `required`; constrain-set sets `enum`; range sets `minimum`/`maximum`; pattern
@@ -376,26 +384,21 @@ Resolved findings are kept inline below marked `[RESOLVED]` for traceability.
 
 ### Medium — sandbox / interception completeness
 
-- **JSON-RPC batch (top-level array) bypasses the `tools/call` rewrite.**
+- **JSON-RPC batch (top-level array) bypasses the `tools/call` rewrite. [RESOLVED]**
   `pump_downstream` (`crates/lagom-proxy/src/bridge.rs`) parses each line as one
   `serde_json::Value` and routes on `method_of()`, which reads `msg.get("method")`.
   A JSON-RPC 2.0 batch is a top-level **array** of request objects — it has no
-  `"method"` key, so `method_of()` returns `None` and the message falls into the
-  `_` passthrough arm, written to the upstream child **unchanged**. A batched
-  `tools/call` is therefore never run through `lagom_core::rewrite` (pins not
-  injected, constraints/enums/patterns not enforced, dropped/renamed tools not
-  blocked), and a batched `tools/list` is never projected (no id recorded → the
-  response leaks the full upstream surface). Severity is **medium** not high
-  because (a) MCP removed JSON-RPC batching in the `2025-06-18` spec and the
-  bridge targets `2025-11-25` (single newline-delimited messages, confirmed via
-  Context7), so a spec-conformant harness never sends batches; and (b) lagom is
-  stdio-only with a single trusted-ish harness as the client. But lagom's value
-  proposition is sandboxing a possibly-adversarial agent, and nothing
-  structurally stops a non-conformant or malicious downstream from sending
-  `[{...,"method":"tools/call",...}]` to slip a call past the projection. No test
-  exercises a batch. *Fix direction:* detect a top-level `Value::Array` and
-  either **reject** it (cleanest for `2025-11-25`, which forbids batching) or
-  iterate and apply the same per-element interception. **Touches `lagom-proxy`.**
+  `"method"` key, so it would have fallen into the `_` passthrough arm and been
+  written to the upstream child **unchanged**, slipping a batched `tools/call`
+  past `lagom_core::rewrite` (pins/constraints/drops not enforced) and a batched
+  `tools/list` past projection (full upstream surface leaked). *Resolved:*
+  `pump_downstream` now detects a top-level `Value::Array` (`bridge.rs:237`,
+  `msg.is_array()`) and rejects it loudly with a JSON-RPC `-32600` error
+  (`batch_rejected()`, `bridge.rs:460`) rather than forwarding it — the cleanest
+  choice for MCP `2025-11-25`, which forbids batching (confirmed via Context7).
+  Covered by `batch_is_rejected_not_forwarded`
+  (`crates/lagom-proxy/tests/proxy_roundtrip.rs:199`), which asserts the batch
+  returns an error and never reaches the upstream.
 
 ### Low — CI / QA-gate coverage
 
