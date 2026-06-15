@@ -24,7 +24,8 @@ don't reconstruct them.
 
 ## STATUS (2026-06-15)
 
-- lagom **v0.1.0, UNRELEASED**. Pushed to `main` at **`a9c140e`** (or later — `git log`) (`github.com/hylla-io/lagom`, private).
+- lagom **v0.1.0, UNRELEASED**. Pushed to `main` at **`e23a4df`** (or later — `git log`) (`github.com/hylla-io/lagom`, private).
+- **Evidence article**: `docs/ARTICLE_LAGOM.md` (lagom-scoped, evidence-based). Real token corpus across **10 real MCP servers = 54.7% tool-surface saved** (github 26→2 = 83.6%; honest 0% rows for single-tool servers), `bench/REPORT.md` + `bench/savings.svg` (chart from data) + `bench/raw/`. Confinement re-proven brand-free via `lagom serve` directly (fixed core): `e2e/runs/lagom-direct/`. Decisions locked: article is lagom-scoped (surface+confinement; the billed-cascade $ number is sand's experiment, not lagom's — lagom never sees an LLM); on release → public repo + registries.
 - One Rust core (`lagom-core`) + faces: **CLI**, **Python** (PyO3), **Go** (wasm+wazero, `go get`), **TS/Node** (napi-rs).
 - All 6 gates green (verified): `just ci`, `just go-test`, `just node-test`, `just py-test`, `just parity` (zero drift), `just examples`.
 - Real token savings (Anthropic `count_tokens`, logged in `bench/`): **~52% avg** tool-surface reduction across real MCP servers (everything −64%, filesystem −67%, memory −50%, sequential-thinking −43% via caveman docs).
