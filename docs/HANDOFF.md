@@ -2,13 +2,25 @@
 
 Single source of "where we are" for a fresh session or the sand team. Pairs with
 `SPEC.md` (design), `CONTEXT.md` (glossary), `FEATURES.md` (feature inventory),
-`docs/adr/` (decisions), `docs/SAND_ORCH_PROMPT.md` (sand's brief),
+`docs/adr/` (decisions), `docs/SAND_ORCH_PROMPT.md` (sand design brief),
+`docs/SAND_GETTING_STARTED.md` (sand consume + e2e runbook),
 `docs/SAND_LAGOM_HANDOFF.md` (caveman contract), `docs/POC_FINDINGS.md`
-(real-agent results), `bench/` (real token numbers).
+(real-agent results), `bench/` (real token numbers), `bin/lagom-codex-poc.sh`
+(working codex confinement run), `go/examples/branded.go` (consumer pattern).
+
+## ON RESUME (lossless pickup)
+
+1. Read this file. 2. `git log --oneline -10` for the latest commits (HEAD below
+may lag). 3. `just ci && just go-test && just node-test && just py-test &&
+just parity && just examples` to confirm everything is still green. 4. Durable
+behavioral rules are in `~/.claude` memory (`binding-parity-and-docs`,
+`always-real-benchmarks`, `lagom-go-get-consumption`) + this repo's `CLAUDE.md`.
+The reproducible techniques are encoded in `bin/*.sh` + `bench/*.py` — run them,
+don't reconstruct them.
 
 ## STATUS (2026-06-15)
 
-- lagom **v0.1.0, UNRELEASED**. Pushed to `main` at **`04c7e5a`** (`github.com/hylla-io/lagom`, private).
+- lagom **v0.1.0, UNRELEASED**. Pushed to `main` at **`be8cbd3`** (or later — `git log`) (`github.com/hylla-io/lagom`, private).
 - One Rust core (`lagom-core`) + faces: **CLI**, **Python** (PyO3), **Go** (wasm+wazero, `go get`), **TS/Node** (napi-rs).
 - All 6 gates green (verified): `just ci`, `just go-test`, `just node-test`, `just py-test`, `just parity` (zero drift), `just examples`.
 - Real token savings (Anthropic `count_tokens`, logged in `bench/`): **~52% avg** tool-surface reduction across real MCP servers (everything −64%, filesystem −67%, memory −50%, sequential-thinking −43% via caveman docs).
