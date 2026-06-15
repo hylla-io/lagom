@@ -11,11 +11,59 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: '1.26.x'
-          cache: true
-      - name: Install mage
-        run: go install github.com/magefile/mage@latest
-      - name: mage ci
-        run: mage ci
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+      - name: just ci
+        run: just ci
+
+  # The Python binding (lagom-py) is excluded from the workspace `just ci` gate
+  # because its pyo3 extension-module cdylib needs a Python interpreter to link
+  # (root Cargo.toml / justfile). This job gates it separately so a pyo3
+  # regression fails CI: fmt-check + clippy (`just py-check`), the binding's Rust
+  # unit tests (`just py-test`), and a maturin wheel build + Python smoke test
+  # (`just py`).
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+      - uses: astral-sh/setup-uv@v5
+      - name: install maturin
+        run: uv tool install maturin
+      - name: just py-check
+        run: just py-check
+      - name: just py-test
+        run: just py-test
+      - name: just py
+        run: just py
+
+  # The wasm/Go face (lagom-wasm + go/) is also outside the workspace gate:
+  # lagom-wasm targets wasm32 (its memory ABI is only meaningful there) and the
+  # Go module runs the embedded blob via wazero. This job rebuilds the wasm
+  # (refreshing the committed blob), then runs the Go tests against that freshly
+  # built blob under CGO_ENABLED=0 — so a lagom-core change that alters wasm
+  # behavior is caught, and the go-get-clean (no-cgo) guarantee is enforced by
+  # the test path itself.
+  wasm-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: build wasm + refresh embedded blob
+        run: just wasm
+      - name: go tests (CGO-free)
+        run: just go-test

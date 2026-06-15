@@ -1,98 +1,99 @@
 # CLAUDE.md — project guidance for lagom
 
-Project-local guidance for working inside the `lagom` tree. Global rules (Tillsyn coordination, Section 0 reasoning, evidence sources, worktree hygiene, output style) live at `~/.claude/CLAUDE.md` and are NOT duplicated here.
+Project-local guidance for working inside the `lagom` tree. Global rules (Tillsyn
+coordination, Section 0 reasoning, evidence sources, worktree hygiene, output
+style) live at `~/.claude/CLAUDE.md` and are NOT duplicated here.
 
-## Architecture & Cascade Tracking
+lagom is a **Rust** project: a transport-less core (`lagom-core`) behind multiple
+faces (CLI, Python binding, and a wasm/Go binding via wazero). See
+[`SPEC.md`](SPEC.md) for the design,
+[`CONTEXT.md`](CONTEXT.md) for the canonical glossary, and
+[`docs/adr/`](docs/adr/) for architecture rationale. ADR-0002 superseded the
+original Go/mage bootstrap — this file reflects the Rust reality.
 
-Freshly-bootstrapped Go-only sibling. The cross-project agent-dispatch + persona architecture (per-persona `settings.json` + `bin/agent-dispatch.sh` + `.claude/hooks/`) was sync'd from the source-of-truth sibling `ta`; the sync file-list + dev bootstrap checklist live in `R_SHIP_HANDOFF.md`. Per `feedback_no_sibling_git_mutations`, orch never runs git here — dev owns git history.
+## Build gate — `just ci`
 
-- **Cascade tracking uses the `ta` MCP** (`mcp__ta__*` on `.ta/`-managed records), **NEVER `tillsyn` MCP** — only the `tillsyn` repo has Tillsyn MCP wired. Any leftover textual `mcp__tillsyn__*` ref in a persona body is INERT here.
-- **`ta` records are the work-tracking source of truth.** Built-in `TaskCreate`/`TaskUpdate` are fine for granular sub-steps or tiny reminders — anything durable goes in a `ta` record.
+The canonical gate is **`just ci`**: `cargo fmt --all --check` + `cargo clippy
+--all-targets --all-features -D warnings` + `cargo test --all` + `cargo build
+--all`. Run it before any build action item is marked complete; work is not done
+until it is green.
 
-## Cascade Methodology — Plan Down, Build Up
+- Prefer the `just` recipes over raw cargo so the gate name is stable:
+  `just fmt`, `just fmt-check`, `just clippy`, `just test`, `just build`,
+  `just ci`. `just --list` for the full set.
+- You MAY run cargo/just freely (read or mutate the working tree); they are not
+  git mutations.
+- The **Python binding** (`lagom-py`) is a pyo3 `extension-module` cdylib and is
+  **excluded** from the workspace build (`Cargo.toml`), so `just ci` does not
+  cover it. Build/lint/test it separately: `just py` (maturin wheel + smoke
+  test), `just py-check` (fmt + clippy), `just py-test` (rlib unit tests). These
+  need `maturin` and `uv`. lagom-py runs in a dedicated `python` CI job.
+- The **wasm/Go binding** (`lagom-wasm` crate + `go/` module) is likewise
+  **excluded** from the workspace (its memory ABI is only meaningful on wasm32),
+  so `just ci` does not cover it. Build/test it separately: `just wasm` (build the
+  wasm32 face via the rustup `stable` toolchain and refresh the committed
+  `go/internal/wasmbin/lagom.wasm`), `just go-test` (the Go binding's in-process
+  wazero tests under `CGO_ENABLED=0`). `just wasm` needs
+  `rustup target add wasm32-unknown-unknown`. NOTE: `lagom-wasm`/`lagom-go` are
+  not yet in a CI job — see the KNOWN GAPS section of `FEATURES.md`.
 
-Canonical contract: [`CASCADE_METHODOLOGY.md`](CASCADE_METHODOLOGY.md) at repo root (byte-identical with tillsyn — tillsyn is the methodology SOURCE; this sibling consumes it). Key invariants:
+## Rust development rules
 
-1. **PLAN DOWN, BUILD UP.** Plan top-down (a plan node decomposes into child plans + atomic build droplets); build bottom-up (atoms land first, integration nodes follow once their inputs are green).
-2. **RECURSE ON ATOMICITY.** 1-2 small code blocks per build droplet, ≤80 LOC incl. tests, ≤3 files. ≥3 distinct production symbols → split.
-3. **PER-BRANCH PARALLELISM.** All unblocked work runs in parallel; only `blocked_by` serializes.
-4. **DESCENT GATE per branch.** Plan-QA pair (proof + falsification) MUST both PASS before that node spawns children or builds.
-5. **DROPLET-LEVEL QA = `mage ci` gate.** No LLM proof/falsification per droplet; the automated gate is enough.
-6. **ORCH AUTO-ADVANCE.** Drive the cascade autonomously; don't ask permission per tick.
-
-## Go Development Rules
-
-- **Hexagonal architecture**, interface-first boundaries, dependency inversion.
-- **TDD-first** where practical. Ship small tested increments.
+- **Hexagonal / dependency-inverted**: everything depends on the pure
+  `lagom-core`; nothing pure depends on transport (ADR-0001). The stdio proxy
+  and CLI are thin adapters. Do not reach transport types into the core.
+- **`lagom-core` is DONE and green** — `Policy`, `project`, `rewrite`, `merge`,
+  `validate`. Depend on it; do not reimplement or edit it except to add it as a
+  dependency.
 - **Smallest concrete design.** No abstraction for hypothetical future variation.
-- **Idiomatic Go** — naming, package structure, import grouping (stdlib / third-party / local).
-- **Go doc comments** on every top-level declaration and method.
-- **Errors**: wrap with `%w`, bubble at clean boundaries, log context-rich failures at adapter/runtime edges, don't swallow.
-- **Tests**: `*_test.go` co-located, table-driven, behavior-oriented; `-race` via mage targets.
+- **Idiomatic Rust** — naming, module structure, import grouping (std /
+  third-party / local), errors wrapped with `thiserror` and bubbled at clean
+  boundaries; never swallow (`SPEC.md` §9.1).
+- **Doc comments** (`///`) on every public item; module docs (`//!`) cite the
+  relevant `SPEC.md` section.
+- **Tests**: co-located `#[cfg(test)]` modules, table-driven and
+  behavior-oriented. TDD where practical; ship small tested increments.
 
-## Build Verification
+## Evidence sources (Rust)
 
-Before any `build` action item is `complete`:
+Hylla and mage do not apply here (Hylla is Go-only; ADR-0002 dropped both).
+Evidence order for Rust work:
 
-1. All relevant mage targets pass (`mage -l` for the list).
-2. **NEVER raw Go toolchain** (`go test` / `go build` / `go run` / `go vet`). Always `mage <target>`. If a target has a bug, fix the target — don't bypass.
-3. All template-generated QA subtasks completed.
+1. **graphify** for codebase understanding/review — run `graphify update .` to
+   refresh the graph, then the graphify MCP tools (`mcp__graphify__query_graph`,
+   `get_node`, `get_neighbors`, `shortest_path`, `god_nodes`) or the
+   `graphify query/explain/affected` CLI.
+2. **rust-analyzer** via the `LSP` tool for symbol-level semantics.
+3. `git diff` for uncommitted deltas; Read/Grep/Glob for non-Rust and post-edit
+   pre-commit Rust.
+4. **Context7** + `cargo doc` for external crate semantics.
 
-### Canonical 12-target shape (per tillsyn P6 — 2026-05-29)
+## Work tracking — `ta`
 
-```
-TestFunc(pkg, fn)  builder + build-QA       go test -run "^<Func>$" -count=1 -race <pkg>
-TestPkg(pkg)       plan-QA read-only        go test -count=1 <pkg>
-Test               closeout/orch            go test ./...
-RacePkg(pkg)       build-QA                 go test -race -count=1 <pkg>
-Race               closeout/orch            go test -race ./...
-FormatFile(file)   builder + build-QA       gofumpt -w <file>
-Format             closeout/orch            gofumpt -w .
-FormatCheck        ci                       gofumpt -l . && fail if non-empty
-VetPkg(pkg)        builder + build-QA       go vet <pkg>
-Vet                closeout/orch            go vet ./...
-Tidy               orch-only                go mod tidy + diff-exit-code
-CI                 closeout/orch            FormatCheck + Vet + (Race+Coverage) + Tidy + Build
-```
+Cascade / work tracking uses the **`ta` MCP** (`mcp__ta__*` on `.ta/`-managed
+records) — language-agnostic, retained across the Rust migration. `ta` records
+are the durable source of truth; built-in `TaskCreate`/`TaskUpdate` are fine for
+granular sub-steps. NEVER the `tillsyn` MCP (only the tillsyn repo has it wired).
 
-This shape is enforced across all sibling projects for naming consistency so agents always know the gate name. Hyphenated aliases (`format-check`, `format-file`, `test-func`, `test-pkg`, `race-pkg`, `vet-pkg`) preserved for human ergonomics.
+- All `ta <read-command>` invocations from dispatched roles MUST pass `--json`
+  (`ta get`, `ta list-sections`, `ta schema`, `ta search`).
+- The `ta` MCP server pins one project per process: launch Claude Code from the
+  active checkout, or pass `--project <abs-path>` in the MCP server invocation.
 
-## Hylla discipline — Go-only, primary evidence source
+There is no `ta-go-*` agent matrix here — those run the Go toolchain. Rust build
+work uses general-purpose (or future Rust-flavored) agents against `just ci`.
 
-Evidence order for Go work: (1) Hylla (`mcp__hylla__*`) for committed symbols/refs/graphs; (2) `git diff` for uncommitted; (3) Read/Grep/Glob for non-Go and post-edit pre-push Go; (4) Context7 + `go doc` + LSP for external semantics.
+## Cascade methodology — plan down, build up
 
-**Hylla is Go-only.** Never query for `.toml`, `.json`, `.md`, `.yml`, scripts.
+Canonical contract: [`CASCADE_METHODOLOGY.md`](CASCADE_METHODOLOGY.md) (consumed
+from tillsyn, the methodology source). Key invariants: plan top-down / build
+bottom-up; recurse on atomicity (1-2 small code blocks, ≤80 LOC incl. tests, ≤3
+files per build droplet); per-branch parallelism (only `blocked_by` serializes);
+a plan-QA descent gate (proof + falsification) before a node spawns children;
+**droplet-level QA = the `just ci` gate** (no per-droplet LLM proof); orch
+auto-advances.
 
-**Push-often + ingest-after-push**: after every commit batch push to origin, then trigger `mcp__hylla__hylla_ingest`. Between push and ingest, fall back to `git log` / `Read`.
+## Git discipline
 
-Spawn prompts for dispatched `ta-go-*` roles MUST include the Hylla artifact ref `github.com/hylla-io/lagom@main` (once the GitHub repo exists).
-
-## What's missing (bootstrap TODO for dev)
-
-This project was sync'd with the agent infrastructure but is not yet a working Go project. To bring it online, the dev needs to:
-
-1. `git init` + remote setup
-2. `go mod init github.com/hylla-io/lagom`
-3. Bootstrap `magefile.go` to the canonical 12-target shape (see tillsyn or ta for reference)
-4. Bootstrap `.github/workflows/ci.yml` calling `mage ci`
-5. Add `cmd/lagom/main.go` (or whatever entrypoint the project chooses)
-6. Fill in project-specific sections in this CLAUDE.md when domain decisions are made (architecture, dependencies, target users, etc.)
-
-This CLAUDE.md is intentionally generic until lagom's domain is decided.
-
-## ta CLI usage
-
-- All `ta <read-command>` invocations from dispatched roles MUST pass `--json`.
-- `--json` accepted on: `ta get`, `ta list-sections`, `ta schema`, `ta search`.
-- **NEVER invoke raw `go test` / `go vet` / `go build` / `gofmt` / `gofumpt`.** Always route through mage.
-
-## MCP server pinning
-
-The `ta` MCP server pins one project per process. Either:
-
-- **Launch Claude Code FROM the active project checkout** (inherits cwd to spawned MCP servers).
-- **Or pass `--project <abs-path>`** in the MCP server invocation:
-
-  ```json
-  {"mcpServers":{"ta":{"command":"ta","args":["--project","/abs/path/to/project"]}}}
-  ```
+Per `feedback_no_sibling_git_mutations`, orch never runs git here — the dev owns
+git history. Do not commit/push/add/tag/publish from dispatched roles.

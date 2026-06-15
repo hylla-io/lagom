@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "crates/lagom-core",
+    "crates/lagom-config",
+    "crates/lagom-audit",
+    "crates/lagom-proxy",
+    "crates/lagom-cli",
+]
+# lagom-py is a pyo3 cdylib (extension-module): linking it into a plain
+# `cargo build --all` would need a Python interpreter to link against and would
+# break the `just ci` gate on machines/CI without one. It is therefore EXCLUDED
+# from the default workspace build and built separately via `just py` (maturin).
+exclude = ["crates/lagom-py", "crates/lagom-wasm"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/hylla-io/lagom"
+rust-version = "1.96"
+
+[workspace.dependencies]
+lagom-core = { path = "crates/lagom-core" }
+lagom-config = { path = "crates/lagom-config" }
+lagom-audit = { path = "crates/lagom-audit" }
+lagom-proxy = { path = "crates/lagom-proxy" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+toml = "0.8"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }

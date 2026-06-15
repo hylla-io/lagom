@@ -1,0 +1,41 @@
+[package]
+name = "lagom-py"
+description = "Python binding (PyO3/maturin) exposing lagom's project/rewrite core."
+# Excluded from the workspace (see root Cargo.toml): a pyo3 extension-module
+# cdylib needs a Python interpreter to link, which would break `cargo build
+# --all`. Built via `just py` (maturin) instead. Because it is excluded it
+# cannot inherit `[workspace.package]`, so these are set explicitly.
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/hylla-io/lagom"
+rust-version = "1.96"
+
+# Python imports this as `import lagom`, so the extension module is named
+# `lagom` (the `#[pymodule] fn lagom` must match this `[lib] name`).
+[lib]
+name = "lagom"
+# cdylib for the Python extension module; rlib so it can still be unit-tested.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lagom-core = { path = "../lagom-core" }
+# The spawned-process face (`mint_stdio_server`) reuses the native stdio proxy +
+# minting from lagom-proxy rather than reimplementing transport in the binding.
+lagom-proxy = { path = "../lagom-proxy" }
+# The optional audit path on `mint_stdio_server` opens an append-only JSONL log
+# and routes through `serve_audited`, mirroring the CLI's `--audit` flag.
+lagom-audit = { path = "../lagom-audit" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+# `extension-module` is NOT enabled by default: with it on, the crate links
+# against no libpython, so `cargo test`/`cargo clippy` (which build a test
+# *binary*) fail to resolve the Py* symbols. maturin turns it on for the wheel
+# via the `extension-module` feature below (pyproject `[tool.maturin] features`),
+# while the Rust unit tests build/link against a real interpreter without it.
+pyo3 = { version = "0.23", features = ["abi3-py39"] }
+
+[features]
+# Re-exported so maturin can enable `pyo3/extension-module` for the wheel build.
+extension-module = ["pyo3/extension-module"]

@@ -1,0 +1,17 @@
+[package]
+name = "lagom-proxy"
+description = "stdio MCP proxy: spawn the upstream child, bridge stdio, and mint ephemeral projections."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lagom-core = { workspace = true }
+lagom-config = { workspace = true }
+lagom-audit = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

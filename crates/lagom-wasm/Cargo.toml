@@ -1,0 +1,35 @@
+[package]
+name = "lagom-wasm"
+description = "wasm32 face of lagom-core: project/rewrite/merge/validate over a JSON-in/JSON-out memory ABI, run via wazero in Go (no cgo)."
+# Excluded from the workspace (see root Cargo.toml): this crate is a wasm32
+# `cdylib` whose ABI is only meaningful on `wasm32-unknown-unknown`. Building it
+# into a plain `cargo build --all` on the host triple would link a host cdylib
+# nobody consumes and pull the `wasm32`-shaped panic/alloc surface into the
+# native gate. It is built separately via `just wasm`
+# (`cargo build --release --target wasm32-unknown-unknown -p lagom-wasm`).
+# Because it is excluded it cannot inherit `[workspace.package]`, so these are
+# set explicitly.
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/hylla-io/lagom"
+rust-version = "1.96"
+
+[lib]
+# cdylib so the wasm module exports its functions; rlib so the ABI glue
+# (alloc/dealloc + the JSON round-trip helpers) can still be unit-tested on the
+# host triple without a wasm runtime.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lagom-core = { path = "../lagom-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# Keep the embedded .wasm small: the Go module `go:embed`s it, so every byte
+# ships in consumer binaries. lagom-core is pure compute, so size-optimising is
+# free of runtime cost here.
+opt-level = "s"
+lto = true
+strip = true

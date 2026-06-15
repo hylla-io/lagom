@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "lagom"
+description = "Python binding for lagom: serve narrowed projections of an upstream MCP server."
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dynamic = ["version"]
+
+[tool.maturin]
+# The cdylib is named `lagom` (see Cargo.toml [lib] name), so the wheel imports
+# as `import lagom`. Manifest pinned because the crate is excluded from the
+# workspace and maturin is invoked from the repo root via `just py`.
+manifest-path = "Cargo.toml"
+module-name = "lagom"
+features = ["pyo3/extension-module"]

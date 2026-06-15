@@ -1,9 +1,19 @@
 # macOS
 .DS_Store
 
-# Go build outputs
-/bin/
+# Rust build outputs
+/target/
+crates/*/target/
 coverage.out
+
+# graphify knowledge-graph artifacts (machine-generated, do not commit)
+graphify-out/
+
+# lagom-py (maturin) build + test artifacts
+crates/lagom-py/dist/
+crates/lagom-py/.venv/
+__pycache__/
+.pytest_cache/
 
 # Agent / tool state — track project-level config (.claude/agents/*.md +
 # .claude/settings.json + .claude/hooks/) so subagent personas + tool
