@@ -91,11 +91,11 @@ go-test:
 # lagom-node is EXCLUDED from the default workspace (see root Cargo.toml): it is a
 # napi-rs cdylib built by the napi CLI, not by `cargo build --all`, so keeping it
 # out keeps `just ci` green on machines without the napi toolchain (mirrors
-# lagom-py / lagom-wasm). The napi CLI is fetched on demand via `npx` — no global
-# install required (Node + npm must be present). `--platform` emits the
+# lagom-py / lagom-wasm). The napi CLI is fetched + run on demand via `bunx`
+# (bun, not npm/npx — no npm client anywhere in the gate). `--platform` emits the
 # platform-tagged `.node` plus the `index.js`/`index.d.ts` the package ships.
 node-build:
-    cd crates/lagom-node && npx -y -p @napi-rs/cli@3 napi build --platform --release --manifest-path Cargo.toml
+    cd crates/lagom-node && bunx @napi-rs/cli@3 build --platform --release --manifest-path Cargo.toml
 
 # Build the Node binding then run its smoke test (mirrors `just py`): import the
 # addon from Node and assert project() drops a tool + pins/hides an arg and

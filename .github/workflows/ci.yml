@@ -63,6 +63,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+      - uses: oven-sh/setup-bun@v2
       - name: just node-check
         run: just node-check
       - name: just node-test
@@ -111,6 +112,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-go@v5
         with:
           go-version: stable

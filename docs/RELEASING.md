@@ -11,8 +11,8 @@ inert until a tag is pushed.
   GitHub repo public. Flip it in repo Settings → Danger Zone. (Irreversible-ish;
   maintainer's call.)
 - **Add repo secrets** (Settings → Secrets → Actions): `CARGO_REGISTRY_TOKEN`
-  (crates.io), `PYPI_API_TOKEN` (PyPI). For Node: an `NPM_TOKEN` once the npm
-  flow is wired (§4).
+  (crates.io), `PYPI_API_TOKEN` (PyPI). For Node: an `NPM_TOKEN` used by `pnpm`/
+  `bun publish` to the registry (§4) — never the npm client.
 - **Claim names** if going public: PyPI `lagom` (pyproject `[project].name`) and
   npm `@hylla-io/lagom` (already scoped). `lagom-core` on crates.io.
 
@@ -59,15 +59,21 @@ git tag v0.1.0 && git push origin v0.1.0
   ```
   Consumers then `go get github.com/hylla-io/lagom/go@v0.1.0` (drop `GOPRIVATE`
   once the repo is public). Verify on pkg.go.dev.
-- **Node** (napi multi-platform) — the napi prebuild→npm flow needs a verified
-  matrix before wiring into `release.yml` (per-target `.node` builds published as
-  platform sub-packages via `napi prepublish`, main `@hylla-io/lagom` pulling them
-  as `optionalDependencies`). Until then, publish from a clean checkout:
+- **Node** (napi multi-platform) — **no npm/npx anywhere**: build the addon with
+  the napi CLI via **bunx**, publish to the npm registry with **pnpm** (or
+  `bun publish`) — the npm *registry* is where JS deps live, but we never use the
+  npm *client*. Plain `cargo build` is NOT enough (the napi CLI does required
+  post-processing; a raw cdylib hard-crashes node on load — verified). Publish
+  from a clean checkout:
   ```sh
-  cd crates/lagom-node && npm ci && npm run build && npm publish --access public
+  cd crates/lagom-node
+  bunx @napi-rs/cli@3 build --platform --release --manifest-path Cargo.toml
+  pnpm publish --access public --no-git-checks      # or: bun publish
   ```
-  (single-platform; add the matrix to `release.yml` once dry-run-verified). Needs
-  `npm login` / `NPM_TOKEN`.
+  (single-platform today; the per-target matrix — `.node` sub-packages pulled as
+  `optionalDependencies` — needs a verified dry-run before wiring into
+  `release.yml`). Auth via `pnpm config set //registry.npmjs.org/:_authToken
+  $NPM_TOKEN` (no `npm login`).
 
 ## 5. After publish
 
@@ -84,6 +90,6 @@ git tag v0.1.0 && git push origin v0.1.0
 | Rust `lagom-core` | crates.io | tag `vX.Y.Z` | `CARGO_REGISTRY_TOKEN` | wired (release.yml) |
 | Python `lagom` | PyPI | tag `vX.Y.Z` | `PYPI_API_TOKEN` | wired (release.yml) |
 | Go `…/go` | git/pkg.go.dev | tag `go/vX.Y.Z` | — | maintainer step (§4) |
-| Node `@hylla-io/lagom` | npm | manual | `NPM_TOKEN` | maintainer step; matrix TODO (§4) |
+| Node `@hylla-io/lagom` | npm registry (via pnpm/bun) | manual | `NPM_TOKEN` | maintainer step; matrix TODO (§4) |
 
 Nothing above happens without an explicit tag push by the maintainer.
