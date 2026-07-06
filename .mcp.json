@@ -4,6 +4,22 @@
       "command": "graphify-mcp",
       "args": [],
       "env": {}
+    },
+    "fastmcp-slim": {
+      "command": "lagom",
+      "args": [
+        "serve",
+        "--config",
+        "e2e/harness/lagom.toml",
+        "--audit",
+        "e2e/harness/audit.jsonl",
+        "--run-id",
+        "harness",
+        "--",
+        "node",
+        "bin/fast-mcp.js"
+      ],
+      "env": {}
     }
   }
 }

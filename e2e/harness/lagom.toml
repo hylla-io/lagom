@@ -1,0 +1,13 @@
+# Harness e2e policy: the projection Claude Code consumes via .mcp.json
+# (server `fastmcp-slim`), wrapping the repo's Node fixture bin/fast-mcp.js.
+# Sealed allowlist: `secret` is dropped, `echo` is exposed as `say` with the
+# `token` arg pinned (hidden from the agent, injected on every call).
+default-presence = "drop"
+
+[tools.echo]
+presence = "keep"
+rename = "say"
+description = "Echo message back. message is the only knob."
+
+[tools.echo.args.token]
+pin = "harness-pinned"

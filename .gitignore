@@ -55,6 +55,9 @@ parity/runners/*/target/
 *.swp
 *.swo
 
+# Runtime audit trace of the harness-wired lagom server (.mcp.json fastmcp-slim).
+e2e/harness/audit.jsonl
+
 # Secrets
 .env
 .env.local
