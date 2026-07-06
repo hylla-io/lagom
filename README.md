@@ -33,13 +33,26 @@ spec-cross-checked feature inventory lives in [`FEATURES.md`](FEATURES.md).
 
 ## Install
 
+lagom installs **straight from this repo** — Go-style, no registry account
+needed on either side. Pin a tag for reproducible installs once tags exist.
+(Registry publishing to crates.io / PyPI / npm is wired in
+[`.github/workflows/release.yml`](.github/workflows/release.yml) and switches on
+per-registry when its token secret is added — see
+[`docs/RELEASING.md`](docs/RELEASING.md); until then those jobs skip cleanly.)
+
 ### CLI
 
-Build the binary from the workspace:
+```sh
+cargo install --git https://github.com/hylla-io/lagom lagom-cli
+# installs the `lagom` binary into ~/.cargo/bin; add e.g. --tag v0.1.0 to pin
+```
+
+Or from a clone:
 
 ```sh
-cargo build --release -p lagom-cli
-# binary at ./target/release/lagom
+cargo install --path crates/lagom-cli
+# or just build it in place:
+cargo build --release -p lagom-cli   # binary at ./target/release/lagom
 ```
 
 Or run it straight from the workspace during development:
@@ -48,17 +61,41 @@ Or run it straight from the workspace during development:
 cargo run -p lagom-cli -- --help
 ```
 
+### Rust library
+
+Depend on the core (or any crate in the chain) as a git dependency:
+
+```toml
+[dependencies]
+lagom-core = { git = "https://github.com/hylla-io/lagom", tag = "v0.1.0" }
+```
+
+One caveat: crates.io **forbids git dependencies in published crates**, so if
+your own crate must be published to crates.io with lagom as a dependency, you
+need the lagom crates on crates.io — that is the trigger for us to publish the
+chain (open an issue).
+
 ### Python binding
 
 The binding is built with [maturin](https://www.maturin.rs/) into an `abi3`
-wheel and installed by **path** (the PyPI name `lagom` is taken by an unrelated
-library):
+wheel. The distribution name is **`hylla-lagom`** (the PyPI name `lagom` is
+taken by an unrelated library); the module still imports as `lagom`. Install
+straight from git — pip/uv build the wheel via the maturin build backend, so a
+Rust toolchain is required (once a PyPI release ships it becomes
+`pip install hylla-lagom` / `uv add hylla-lagom`, no toolchain needed):
+
+```sh
+pip install "hylla-lagom @ git+https://github.com/hylla-io/lagom#subdirectory=crates/lagom-py"
+# uv: uv add "hylla-lagom @ git+https://github.com/hylla-io/lagom#subdirectory=crates/lagom-py"
+```
+
+Or from a clone:
 
 ```sh
 just py        # builds the wheel + runs the smoke test in a throwaway uv env
 ```
 
-To install into your own environment:
+To install a clone-built wheel into your own environment:
 
 ```sh
 maturin build --release --manifest-path crates/lagom-py/Cargo.toml --out dist
@@ -93,26 +130,25 @@ import lagom "github.com/hylla-io/lagom/go"
 ```
 
 The module path is `github.com/hylla-io/lagom/go` (the binding lives in the `go/`
-subdirectory of the repo). `wazero` is the **only** non-stdlib dependency.
-
-**Private module — `GOPRIVATE`.** Until the GitHub repo is public, tell the Go
-toolchain to skip the public proxy and checksum database for it, and make sure
-`git` can authenticate to the private repo:
-
-```sh
-go env -w GOPRIVATE=github.com/hylla-io/*
-# fetch over SSH (or a token) instead of the unauthenticated https proxy:
-git config --global url."git@github.com:hylla-io/".insteadOf "https://github.com/hylla-io/"
-```
-
-`GOPRIVATE` provides the default for `GONOPROXY` and `GONOSUMDB` for the matched
-prefix, so `go get` skips the public module proxy and will not try to verify the
-module against `sum.golang.org`.
+subdirectory of the repo). `wazero` is the **only** non-stdlib dependency. Go
+modules resolve by git tag — the module tag for release `vX.Y.Z` is prefixed
+`go/vX.Y.Z` (pushed automatically by the release workflow), consumed as
+`go get github.com/hylla-io/lagom/go@vX.Y.Z`.
 
 ### TypeScript / Node (`npm`)
 
 The Node binding is a native addon (via [napi-rs](https://napi.rs)) shipping a
-generated `index.js` + `index.d.ts`, so it is fully typed out of the box:
+generated `index.js` + `index.d.ts`, so it is fully typed out of the box.
+`@hylla-io/lagom` is **not on npm yet** (the napi release flow is per
+[`docs/RELEASING.md`](docs/RELEASING.md)); until then, build it from a clone and
+install it as a path dependency:
+
+```sh
+just node-build                                  # compiles the .node addon + index.js/index.d.ts
+npm install /path/to/lagom/crates/lagom-node     # from the consuming project
+```
+
+Once published it will be:
 
 ```sh
 npm install @hylla-io/lagom
@@ -123,10 +159,8 @@ import { project, rewrite, merge, validate, mint, refire, Guard, PolicyBuilder }
   from "@hylla-io/lagom";
 ```
 
-To build from source instead: `just node-build` (compiles the `.node` addon and
-emits the typed `index.js` / `index.d.ts`). See
-[`crates/lagom-node/README.md`](crates/lagom-node/README.md) for the full Node
-API.
+See [`crates/lagom-node/README.md`](crates/lagom-node/README.md) for the full
+Node API.
 
 > **One core, four faces — zero drift.** Every binding (Rust, Python, Node, Go)
 > is a thin skin over the same `lagom-core`, with a byte-identical JSON-in /
@@ -451,12 +485,66 @@ spawns it directly.
 
 ---
 
+## Security model — what lagom does and does not enforce
+
+lagom is a **policy projection layer** — one layer in a defense-in-depth stack,
+not an OS sandbox. Its enforcement boundary is the wire between an agent and
+**one** wrapped upstream. Inside that boundary:
+
+- Every `tools/call` is rewritten (pins injected, constraints checked) or
+  **rejected before it reaches the upstream** — a rejected call is answered
+  locally with an annotated error (`SPEC.md` §9.1); the upstream never sees it.
+- The `merge`/`mint` sandbox is **monotonic**: an overlay may only narrow the
+  sealed base — drop, tighten, pin. Any widening is a load-time error, so an
+  orchestrator can never hand a subagent more capability than its own bound
+  (`SPEC.md` §5.2).
+- The policy is validated against the live upstream `tools/list` at mint; drift
+  kills the child and refuses to serve (`SPEC.md` §5.3).
+- JSON-RPC **batches are rejected** rather than forwarded, so a batched
+  `tools/call` cannot slip past rewrite (MCP 2025-11-25 forbids batching).
+- A downstream line that is **not valid JSON is rejected**, never forwarded —
+  an upstream with a lenient parser can never be reached with bytes lagom did
+  not parse and rewrite (no parser-differential bypass). Valid JSON is always
+  re-serialized from the parsed form before forwarding.
+
+What lagom deliberately does **not** enforce — the integrator owns these:
+
+- **Other MCP servers.** lagom narrows one upstream per projection and has no
+  view of the agent's harness config. If the harness wires a raw, unwrapped
+  server next to a lagom-wrapped one, lagom does nothing about it. An agent is
+  only as confined as its harness config: hand agents *only* surfaces that are
+  lagom-wrapped (CLI) or `Guard`-gated (bindings).
+- **Resources and prompts pass through unfiltered** in 0.1.0 (`SPEC.md` §10) —
+  only tools are narrowed. If the upstream exposes sensitive data as resources,
+  dropping its tools does not hide that data. Resource/prompt narrowing is a
+  planned later slice (§11); until then, wrap upstreams with this in mind.
+- **The upstream child inherits the parent environment.** `lagom serve` /
+  `mint_stdio_server` spawn the upstream with the calling process's full env
+  plus the policy's additions. A wrapped server you don't fully trust sees your
+  env (API keys included) — launch lagom from a process with a scrubbed env if
+  that matters.
+- **`Guard` is cooperative on the app side.** An agent cannot bypass it, but
+  the embedding app must register `slim_defs()` as its `tools/list` and route
+  *every* incoming call through `gate()`. A call path around `gate()` is
+  unprotected by construction.
+- **Tool results are not filtered.** Whatever the upstream returns flows back
+  verbatim; lagom does not defend against prompt injection carried in tool
+  results or upstream-authored descriptions you chose to pass through
+  (authoring Tier-1 override descriptions closes the latter).
+
+Found a way past the boundary? See [`SECURITY.md`](SECURITY.md) for private
+reporting. Supply-chain posture (cargo-deny, govulncheck, Dependabot with a
+72-hour update cooldown) is documented there too.
+
+---
+
 ## Build & test
 
 The canonical gate is [`just`](https://just.systems):
 
 ```sh
 just ci          # fmt-check + clippy -D warnings + test + build (the gate)
+just e2e         # the shipped CLI wrapping a REAL Node MCP server over stdio
 just py          # build + smoke-test the Python wheel (excluded from `just ci`)
 just node-test   # build + smoke-test the Node/TypeScript addon (excluded)
 just wasm        # build the wasm32 core + refresh the Go binding's embedded blob

@@ -400,9 +400,30 @@ Resolved findings are kept inline below marked `[RESOLVED]` for traceability.
   (`crates/lagom-proxy/tests/proxy_roundtrip.rs:199`), which asserts the batch
   returns an error and never reaches the upstream.
 
+### Medium — sandbox / interception completeness (continued)
+
+- **An unparseable downstream line was forwarded to the upstream verbatim.
+  [RESOLVED]** `pump_downstream` forwarded any line `serde_json` could not parse
+  straight to the upstream child ("let the peer decide"), so an upstream with a
+  more lenient line parser (e.g. a streaming decoder that reads one JSON value
+  and ignores trailing bytes) could be reached with an **unrewritten**
+  `tools/call` — no pin injection, no constraint check (a parser-differential
+  bypass of the same family as the resolved batch finding). *Resolved:*
+  `pump_downstream` now rejects unparseable lines loudly with JSON-RPC `-32700`
+  (`invalid_json_rejected()`, `crates/lagom-proxy/src/bridge.rs`) and never
+  forwards bytes it did not parse and re-serialize; MCP stdio requires strict
+  line-delimited JSON, so compliant harnesses never hit this. Covered by
+  `invalid_json_line_is_rejected_not_forwarded`
+  (`crates/lagom-proxy/tests/proxy_roundtrip.rs`) and end-to-end against a real
+  Node upstream in `crates/lagom-cli/tests/e2e_real_upstream.rs` (`just e2e`).
+
 ### Low — CI / QA-gate coverage
 
-- **wasm/Go face (`lagom-wasm`, `go/`) is not wired into any CI job.**
+- **wasm/Go face (`lagom-wasm`, `go/`) is not wired into any CI job.
+  [RESOLVED]** `.github/workflows/ci.yml` now has a `wasm-go` job that rebuilds
+  the wasm blob fresh (`just wasm` — catching stale-blob drift), then runs
+  `just go-test` and `just examples` under `CGO_ENABLED=0`. Original finding
+  kept below for traceability:
   `.github/workflows/ci.yml` has only `check` (`just ci`) and `python` jobs; no
   job runs `just wasm` or `just go-test`. Two facets:
   - `lagom-wasm`'s host-triple unit tests (the `*_str` engine-glue + never-swallow
@@ -422,7 +443,10 @@ Resolved findings are kept inline below marked `[RESOLVED]` for traceability.
     A `go-test` CI job using the committed blob would at least guard the Go glue;
     a `wasm` build + diff step would guard the blob's freshness.
 
-- **Cross-binding parity guard (`just parity`) is not wired into any CI job.**
+- **Cross-binding parity guard (`just parity`) is not wired into any CI job.
+  [RESOLVED]** `.github/workflows/ci.yml` now has a `parity` job with every
+  toolchain (rust+wasm32, uv/maturin, node, bun, go) running `just parity` on
+  every push/PR. Original finding kept below for traceability:
   `.github/workflows/ci.yml` has only `check` (`just ci`) and `python` jobs; the
   NO-DRIFT parity matrix (§11) is a local gate only. A `parity` CI job would catch
   binding drift on every push. Left out of scope for the lagom-finish task (no CI
@@ -470,7 +494,11 @@ Resolved findings are kept inline below marked `[RESOLVED]` for traceability.
   whether constraint rejections should ride as `isError` tool results. No action
   required for 0.1.0 — the annotation reaches the driver intact.
 
-- **`cmd_validate` routes a production path through proxy `test_support`.**
+- **`cmd_validate` routes a production path through proxy `test_support`.
+  [RESOLVED]** `spawn_and_validate` is now a first-class public export of
+  `lagom-proxy` (`pub use bridge::spawn_and_validate`); the `test_support`
+  module is gone and both the CLI and the round-trip tests call the public
+  path. Original finding kept below for traceability:
   `lagom-proxy::test_support` is documented as "not part of the stable API —
   exposed only so the bridge round-trip tests can inject a duplex harness", yet
   the shipped `lagom validate` subcommand calls
@@ -499,7 +527,11 @@ Resolved findings are kept inline below marked `[RESOLVED]` for traceability.
 
 ### Low — docs completeness & cross-binding hygiene
 
-- **No `missing_docs` lint is gated anywhere.** Current docs are complete (a
+- **No `missing_docs` lint is gated anywhere. [RESOLVED]** All four library
+  crates (`lagom-core`, `lagom-audit`, `lagom-config`, `lagom-proxy`) now
+  declare `#![warn(missing_docs)]`, which the gate's `clippy -D warnings`
+  escalates to an error — an undocumented public item fails `just ci`.
+  Original finding kept below for traceability: Current docs are complete (a
   forced `RUSTDOCFLAGS=-W missing_docs cargo doc` over the public crates yields
   zero warnings), but no crate declares `#![warn(missing_docs)]` /
   `#![deny(missing_docs)]` and neither `just ci` nor CI runs rustdoc with the
