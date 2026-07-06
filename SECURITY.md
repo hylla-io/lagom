@@ -35,6 +35,8 @@ coordinated disclosure is appreciated.
   policy) and `govulncheck` on every push and PR.
 - Dependabot updates run with a **72-hour cooldown** (`cooldown.default-days: 3`
   in `.github/dependabot.yml`): no dependency version younger than 3 days is
-  ever proposed, shrinking the freshly-poisoned-release window.
+  ever proposed, shrinking the freshly-poisoned-release window. The same rule
+  binds **manual** bumps in any ecosystem: no version younger than 72 hours is
+  adopted, security fixes included (project policy, `CLAUDE.md`).
 - Releases fire only from maintainer-pushed version tags
   (`.github/workflows/release.yml`); pre-release tags publish nothing.
