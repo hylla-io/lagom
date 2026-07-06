@@ -91,6 +91,13 @@ impl Harness {
         self.to_proxy.flush().await.unwrap();
     }
 
+    /// Send one raw line (not necessarily valid JSON) followed by `\n`.
+    async fn send_raw(&mut self, line: &str) {
+        self.to_proxy.write_all(line.as_bytes()).await.unwrap();
+        self.to_proxy.write_all(b"\n").await.unwrap();
+        self.to_proxy.flush().await.unwrap();
+    }
+
     /// Read the next JSON-RPC message line from the proxy.
     async fn recv(&mut self) -> Value {
         let mut line = String::new();
@@ -111,7 +118,7 @@ async fn start_proxy(
         policy,
         upstream: fixture_command(false),
     };
-    let server = lagom_proxy::test_support::spawn_and_validate(resolved).await?;
+    let server = lagom_proxy::spawn_and_validate(resolved).await?;
 
     // harness → proxy, and proxy → harness, each a duplex pair.
     let (harness_to_proxy, proxy_in) = tokio::io::duplex(64 * 1024);
@@ -218,6 +225,36 @@ async fn batch_is_rejected_not_forwarded() {
     assert!(
         resp.get("result").is_none(),
         "a batched call must never reach the upstream"
+    );
+}
+
+#[tokio::test]
+async fn invalid_json_line_is_rejected_not_forwarded() {
+    let (mut h, _bridge) = start_proxy(projection_policy(), None, "run-badjson")
+        .await
+        .expect("serve");
+
+    // A line lagom cannot parse must never reach the upstream: a lenient
+    // upstream parser could otherwise execute an unrewritten tools/call
+    // (parser-differential bypass). Trailing bytes after a valid object make
+    // serde_json fail while a streaming decoder would happily read the object.
+    h.send_raw(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"abc","artifact":"evil"}}} trailing"#,
+    )
+    .await;
+    let resp = h.recv().await;
+
+    let err = resp
+        .get("error")
+        .expect("invalid JSON must be rejected as an error");
+    assert_eq!(err["code"], json!(-32700), "JSON-RPC parse-error code");
+    assert!(
+        err["message"].as_str().unwrap().contains("not valid JSON"),
+        "annotated per SPEC §9.1"
+    );
+    assert!(
+        resp.get("result").is_none(),
+        "an unparseable line must never reach the upstream"
     );
 }
 

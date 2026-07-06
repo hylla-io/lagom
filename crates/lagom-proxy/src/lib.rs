@@ -13,6 +13,10 @@
 //! produce a byte-identical resolved policy (`SPEC.md` §5.4) — the precondition
 //! for [`refire`].
 
+// Every public item must be documented — the gate's `clippy -D warnings` turns
+// this into an error, upholding the NO-DRIFT docs-always-full invariant.
+#![warn(missing_docs)]
+
 use std::path::PathBuf;
 
 use lagom_core::Policy;
@@ -21,7 +25,7 @@ use thiserror::Error;
 mod bridge;
 pub mod skills;
 
-pub use bridge::{Server, serve, serve_audited};
+pub use bridge::{Server, serve, serve_audited, spawn_and_validate};
 pub use skills::SHIPPED_SKILLS;
 
 // The mint-record data types and the pure `refire` are owned by `lagom-core`
@@ -30,22 +34,6 @@ pub use skills::SHIPPED_SKILLS;
 // Only the *file-loading* mint (resolving `config_paths` off disk) lives in this
 // crate; the in-code `lagom_core::mint` and `lagom_core::refire` are pure.
 pub use lagom_core::{MintRecord, PolicySources, ResolvedPolicy, UpstreamCommand, refire};
-
-/// Test-support seams: spawn-and-validate a [`Server`] without running it, so
-/// integration tests can drive [`Server::run_with`] against in-memory streams.
-///
-/// Not part of the stable API — exposed only so the bridge round-trip tests can
-/// inject a duplex harness in place of process stdio.
-#[doc(hidden)]
-pub mod test_support {
-    use super::{ProxyError, ResolvedPolicy, Server};
-
-    /// Spawn the upstream child and validate the policy against its live
-    /// `tools/list`, returning the un-run [`Server`].
-    pub async fn spawn_and_validate(resolved: ResolvedPolicy) -> Result<Server, ProxyError> {
-        super::bridge::spawn_and_validate(resolved).await
-    }
-}
 
 /// Anything that can go wrong minting or running the proxy.
 #[derive(Debug, Error)]

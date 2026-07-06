@@ -229,8 +229,19 @@ async fn pump_downstream<R, W>(
             continue;
         }
         let Ok(mut msg) = serde_json::from_str::<Value>(&line) else {
-            // Not valid JSON-RPC; forward verbatim and let the peer decide.
-            let _ = write_line(&mut upstream, &line).await;
+            // Not valid JSON. Forwarding it verbatim would let a payload lagom
+            // cannot parse reach an upstream whose parser is more lenient —
+            // slipping an unrewritten `tools/call` past the sandbox (a parser-
+            // differential bypass). Reject loudly instead, mirroring the batch
+            // rejection (SPEC §9.1); MCP stdio requires strict line-delimited
+            // JSON, so a compliant harness never hits this.
+            let mut w = downstream.lock().await;
+            if write_value(&mut *w, &invalid_json_rejected())
+                .await
+                .is_err()
+            {
+                break;
+            }
             continue;
         };
 
@@ -468,6 +479,21 @@ fn batch_rejected() -> Value {
     })
 }
 
+/// The JSON-RPC error returned downstream when a line is not valid JSON. lagom
+/// never forwards bytes it could not parse: an upstream with a more lenient
+/// parser could otherwise be reached with an unrewritten payload
+/// (parser-differential bypass, `SPEC.md` §9.1).
+fn invalid_json_rejected() -> Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": Value::Null,
+        "error": {
+            "code": -32700,
+            "message": "lagom: line is not valid JSON; refusing to forward unparsed bytes upstream"
+        }
+    })
+}
+
 /// Write a serialized JSON value as one newline-delimited line.
 async fn write_value<W: AsyncWrite + Unpin>(w: &mut W, msg: &Value) -> std::io::Result<()> {
     let line = serde_json::to_string(msg).map_err(std::io::Error::other)?;
@@ -509,7 +535,7 @@ pub async fn serve_audited(
 /// the returned [`Server`]: the same reader used for the handshake/probe is
 /// threaded into the pump, so any upstream bytes the probe buffered past the
 /// `tools/list` response newline are preserved (no read-ahead loss).
-pub(crate) async fn spawn_and_validate(resolved: ResolvedPolicy) -> Result<Server, ProxyError> {
+pub async fn spawn_and_validate(resolved: ResolvedPolicy) -> Result<Server, ProxyError> {
     let mut child = spawn_child(&resolved)?;
     let mut up_stdin = child.stdin.take().expect("child spawned with piped stdin");
     let up_stdout = child

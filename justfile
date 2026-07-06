@@ -104,6 +104,14 @@ node-build:
 node-test: node-build
     cd crates/lagom-node && node --test '__test__/**/*.test.mjs'
 
+# End-to-end against a REAL foreign MCP server: the shipped `lagom` binary
+# wrapping the Node fixture `bin/fast-mcp.js` over real process stdio — drop,
+# rename, pin injection, rejection annotation, unparsed-bytes refusal. Needs
+# `node` on PATH, so the test is #[ignore]d from `just ci` and runs here (its
+# own CI job).
+e2e:
+    cargo test -p lagom-cli --test e2e_real_upstream -- --ignored
+
 # Drive the lagom-go consumption examples (a branded mcp-go server + multi-agent
 # ephemeral profiles + multi-upstream composition) through the mcp-go in-process
 # client. Lives in its own module (go/examples) so the binding module keeps

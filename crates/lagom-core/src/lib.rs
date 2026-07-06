@@ -33,6 +33,10 @@
 //! projection from a persisted record (`SPEC.md` §8.2). Both are pure, so they
 //! are shared by every face, including the wasm/Go binding.
 
+// Every public item must be documented — the gate's `clippy -D warnings` turns
+// this into an error, upholding the NO-DRIFT docs-always-full invariant.
+#![warn(missing_docs)]
+
 mod guard;
 mod merge;
 mod mint;

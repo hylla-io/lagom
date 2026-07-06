@@ -14,6 +14,10 @@
 //! present, live inside the [`AuditEvent`] payloads the caller constructs, so the
 //! writer is fully deterministic and its tests need no time source.
 
+// Every public item must be documented — the gate's `clippy -D warnings` turns
+// this into an error, upholding the NO-DRIFT docs-always-full invariant.
+#![warn(missing_docs)]
+
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};

@@ -13,6 +13,10 @@
 //! These are compiling seams: the public signatures are final, the bodies are
 //! `todo!()` until the loader/discovery/builder slices land.
 
+// Every public item must be documented — the gate's `clippy -D warnings` turns
+// this into an error, upholding the NO-DRIFT docs-always-full invariant.
+#![warn(missing_docs)]
+
 use std::path::{Path, PathBuf};
 
 use lagom_core::{Policy, merge};

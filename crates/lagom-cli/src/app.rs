@@ -351,7 +351,7 @@ async fn cmd_validate(
     // `spawn_and_validate` spawns the child, probes `tools/list`, and validates.
     // A drifted policy returns `ProxyError::Drift`; on success the returned
     // server is dropped here, which tears the child down (`kill_on_drop`).
-    match lagom_proxy::test_support::spawn_and_validate(resolved).await {
+    match lagom_proxy::spawn_and_validate(resolved).await {
         Ok(_server) => {
             println!("ok: policy is grounded against the live upstream");
             Ok(ExitCode::SUCCESS)
