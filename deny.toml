@@ -1,0 +1,25 @@
+# cargo-deny policy for the lagom workspace (run in CI as the `supply-chain`
+# job and locally via `cargo deny check`). Guards: known vulnerabilities
+# (RustSec), license allowlist, duplicate-version creep, and registry sources.
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Everything in the tree today is permissive; extend deliberately, never wildcard.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

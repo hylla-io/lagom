@@ -1,0 +1,47 @@
+# Dependabot: keep every ecosystem current, but NEVER pick up a release that is
+# less than 72 hours old (cooldown default-days: 3) — a supply-chain guard
+# against freshly-poisoned versions (the malicious-release window is typically
+# hours to days before detection/yank). Applies to all update types.
+version: 2
+updates:
+  # Rust — the workspace plus the excluded (out-of-workspace) crates, each with
+  # its own committed Cargo.lock.
+  - package-ecosystem: "cargo"
+    directories:
+      - "/"
+      - "/crates/lagom-py"
+      - "/crates/lagom-wasm"
+      - "/crates/lagom-node"
+      - "/parity/runners/rust"
+      - "/parity/runners/compare"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3
+
+  # Go — the binding module, its parity runner, and the examples module.
+  - package-ecosystem: "gomod"
+    directories:
+      - "/go"
+      - "/go/parity"
+      - "/go/examples"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3
+
+  # Node — the napi binding (dev-dependency: the napi CLI).
+  - package-ecosystem: "npm"
+    directory: "/crates/lagom-node"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3
+
+  # GitHub Actions — ci.yml + release.yml action versions.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3

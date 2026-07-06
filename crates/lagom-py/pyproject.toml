@@ -3,14 +3,21 @@ requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "lagom"
+# Distribution name is `hylla-lagom` (PyPI `lagom` is an unrelated DI library);
+# the import stays `import lagom` via [tool.maturin] module-name below.
+name = "hylla-lagom"
 description = "Python binding for lagom: serve narrowed projections of an upstream MCP server. Accepts the raw MCP tools/list (camelCase inputSchema or snake_case input_schema; missing/null schema normalizes to {})."
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/hylla-io/lagom"
 
 [tool.maturin]
 # The cdylib is named `lagom` (see Cargo.toml [lib] name), so the wheel imports

@@ -3,11 +3,17 @@ name: release
 # FIRES ONLY ON A VERSION TAG — the release act, gated on the maintainer's
 # express word (push `vX.Y.Z`). Inert until then. Requires repo secrets:
 #   CARGO_REGISTRY_TOKEN  (crates.io)
-#   PYPI_API_TOKEN        (PyPI)
-# Node (npm) + Go are released per RELEASING.md (napi flow / git tag) — not wired
-# here yet because the napi multi-platform matrix needs a verified dry-run first.
-# ALWAYS push a pre-release tag (e.g. v0.1.0-rc.1) and confirm green before the
-# real tag. See RELEASING.md.
+#   PYPI_API_TOKEN        (PyPI — distribution name `hylla-lagom`)
+#   NPM_TOKEN             (npm registry — published via pnpm, never the npm client)
+#
+# A PRE-RELEASE tag (any tag containing `-`, e.g. v0.1.0-rc.1) runs every BUILD
+# job as a dry-run but publishes NOTHING — the Cargo/package versions carry no
+# rc suffix, so a real publish on an rc tag would irrevocably ship the final
+# version number. ALWAYS push an rc tag and confirm green before the real tag.
+# See docs/RELEASING.md.
+#
+# The Go binding needs no build: the `go-tag` job pushes the module tag
+# `go/vX.Y.Z` (the /go subdirectory module publishes by git tag alone).
 
 on:
   push:
@@ -17,17 +23,39 @@ permissions:
   contents: read
 
 jobs:
-  crate:
+  # ---------------------------------------------------------------- crates.io
+  # The full chain, in dependency order — `cargo publish` waits for each crate
+  # to be visible in the index before the next one resolves against it.
+  # On an rc tag this only packages (metadata dry-run): a chain --dry-run
+  # cannot resolve yet-unpublished path deps against the live index.
+  crates:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: publish lagom-core to crates.io
-        run: cargo publish -p lagom-core
+      - name: package all crates (metadata dry-run)
+        run: |
+          for c in lagom-core lagom-audit lagom-config lagom-proxy lagom-cli; do
+            cargo package -p "$c" --no-verify
+          done
+      # Registry-optional: the primary install path is straight from git
+      # (cargo install --git / git dependencies), so a missing token skips the
+      # crates.io publish instead of failing the release.
+      - name: publish chain to crates.io (skips if no token)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::warning::CARGO_REGISTRY_TOKEN not set — skipping crates.io publish (git installs unaffected)"
+            exit 0
+          fi
+          for c in lagom-core lagom-audit lagom-config lagom-proxy lagom-cli; do
+            cargo publish -p "$c"
+          done
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+  # -------------------------------------------------------------------- PyPI
   python-build:
     strategy:
       fail-fast: false
@@ -47,19 +75,137 @@ jobs:
           name: wheels-${{ matrix.os }}
           path: dist
 
+  # Registry-optional like npm-publish: skips green when PYPI_API_TOKEN is not
+  # set (consumers install from git until a PyPI release ships).
   python-publish:
     needs: python-build
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
+    env:
+      MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
+      - name: check for PYPI_API_TOKEN
+        id: token
+        run: |
+          if [ -z "$MATURIN_PYPI_TOKEN" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PYPI_API_TOKEN not set — skipping PyPI publish (git installs unaffected)"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v4
+        if: steps.token.outputs.present == 'true'
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-      - name: publish wheels to PyPI
+      - name: publish wheels to PyPI (hylla-lagom)
+        if: steps.token.outputs.present == 'true'
         uses: PyO3/maturin-action@v1
         with:
           command: upload
           args: --skip-existing dist/*
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  # --------------------------------------------------------------------- npm
+  # napi-rs v3 flow, one build per target in package.json's napi.targets.
+  # No npm client anywhere: the napi CLI runs via bunx, publishing via pnpm
+  # (docs/RELEASING.md §4). aarch64-linux builds natively on the arm runner.
+  npm-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: crates/lagom-node
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - name: napi build (${{ matrix.target }})
+        run: bunx @napi-rs/cli@3 build --platform --release --target ${{ matrix.target }} --manifest-path Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: crates/lagom-node/*.node
+          if-no-files-found: error
+
+  # Skips gracefully (job green, nothing published) when NPM_TOKEN is not set,
+  # so a cargo+PyPI+Go release can ship before the npm account/org exists.
+  npm-publish:
+    needs: npm-build
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/lagom-node
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: check for NPM_TOKEN
+        id: token
+        working-directory: .
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::NPM_TOKEN not set — skipping npm publish (crates/PyPI/Go unaffected)"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v6
+        if: steps.token.outputs.present == 'true'
+      - uses: oven-sh/setup-bun@v2
+        if: steps.token.outputs.present == 'true'
+      - uses: pnpm/action-setup@v4
+        if: steps.token.outputs.present == 'true'
+        with:
+          version: 10
+      - name: create platform npm dirs
+        if: steps.token.outputs.present == 'true'
+        run: bunx @napi-rs/cli@3 create-npm-dirs
+      - uses: actions/download-artifact@v4
+        if: steps.token.outputs.present == 'true'
+        with:
+          pattern: bindings-*
+          merge-multiple: true
+          path: crates/lagom-node/artifacts
+      - name: move .node binaries into npm dirs
+        if: steps.token.outputs.present == 'true'
+        run: bunx @napi-rs/cli@3 artifacts
+      - name: publish platform packages + root
+        if: steps.token.outputs.present == 'true'
+        run: |
+          pnpm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          for dir in npm/*/; do
+            (cd "$dir" && pnpm publish --access public --no-git-checks)
+          done
+          pnpm publish --access public --no-git-checks
+
+  # ---------------------------------------------------------------------- Go
+  # Go modules publish by git tag alone; the /go subdirectory module needs the
+  # prefixed tag go/vX.Y.Z pointing at the same commit as vX.Y.Z.
+  go-tag:
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: push go module tag
+        run: |
+          git tag "go/${GITHUB_REF_NAME}" "${GITHUB_SHA}"
+          git push origin "go/${GITHUB_REF_NAME}"

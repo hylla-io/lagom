@@ -6,7 +6,31 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: every job only reads the repo. Release publishing lives in
+# release.yml with its own scoped permissions.
+permissions:
+  contents: read
+
 jobs:
+  # Supply-chain gate: RustSec advisories, license allowlist, duplicate-version
+  # and registry-source policy (deny.toml) for the Rust workspace, plus
+  # govulncheck over the Go binding modules.
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: govulncheck (go binding + examples)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          (cd go && govulncheck ./...)
+          (cd go/examples && govulncheck ./...)
+
   check:
     runs-on: ubuntu-latest
     steps:
@@ -18,6 +42,18 @@ jobs:
       - uses: taiki-e/install-action@just
       - name: just ci
         run: just ci
+
+  # End-to-end: the shipped CLI wrapping a REAL foreign MCP server (the Node
+  # fixture bin/fast-mcp.js) over real process stdio. Node ships on the runner.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+      - name: just e2e
+        run: just e2e
 
   # The Python binding (lagom-py) is excluded from the workspace `just ci` gate
   # because its pyo3 extension-module cdylib needs a Python interpreter to link

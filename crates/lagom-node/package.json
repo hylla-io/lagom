@@ -27,6 +27,13 @@
   "engines": {
     "node": ">=18"
   },
+  "optionalDependencies": {
+    "@hylla-io/lagom-darwin-x64": "0.1.0",
+    "@hylla-io/lagom-darwin-arm64": "0.1.0",
+    "@hylla-io/lagom-linux-x64-gnu": "0.1.0",
+    "@hylla-io/lagom-linux-arm64-gnu": "0.1.0",
+    "@hylla-io/lagom-win32-x64-msvc": "0.1.0"
+  },
   "scripts": {
     "build": "napi build --platform --release --manifest-path Cargo.toml",
     "build:debug": "napi build --platform --manifest-path Cargo.toml",
