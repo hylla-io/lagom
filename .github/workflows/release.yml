@@ -34,11 +34,13 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: package all crates (metadata dry-run)
-        run: |
-          for c in lagom-core lagom-audit lagom-config lagom-proxy lagom-cli; do
-            cargo package -p "$c" --no-verify
-          done
+      # Only the chain ROOT can be packaged before the chain is on crates.io:
+      # `cargo package` resolves each crate's registry deps against the live
+      # index, so lagom-audit et al. fail until lagom-core is published. The
+      # ordered publish below is unaffected (core lands first and cargo waits
+      # for index visibility between crates).
+      - name: package chain root (metadata dry-run)
+        run: cargo package -p lagom-core --no-verify
       # Registry-optional: the primary install path is straight from git
       # (cargo install --git / git dependencies), so a missing token skips the
       # crates.io publish instead of failing the release.
