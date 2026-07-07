@@ -237,7 +237,7 @@ fn mint_stdio_server(
     // drive a single-threaded tokio runtime for the lifetime of the session.
     // With no audit log this is identical to `serve(resolved)` (which itself
     // delegates to `serve_audited(resolved, None, "run")`).
-    py.allow_threads(move || {
+    py.detach(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -352,7 +352,9 @@ impl Guard {
 /// emits the policy as JSON ready to hand to `project`, `rewrite`, `merge`,
 /// `validate`, or `mint_stdio_server`. Every method returns nothing and
 /// mutates in place, so calls chain naturally in Python.
-#[pyclass]
+// `from_py_object` keeps the pre-0.28 automatic FromPyObject for this Clone
+// pyclass (pyo3 phased the blanket impl out in favor of the explicit opt-in).
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct PolicyBuilder {
     policy: Policy,
@@ -751,8 +753,8 @@ mod tests {
             "test precondition: parent dir must be absent"
         );
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let err = mint_stdio_server(
                 py,
                 &policy,

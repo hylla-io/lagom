@@ -11,6 +11,23 @@ faces (CLI, Python binding, and a wasm/Go binding via wazero). See
 [`docs/adr/`](docs/adr/) for architecture rationale. ADR-0002 superseded the
 original Go/mage bootstrap — this file reflects the Rust reality.
 
+## Dependency updates — the 72-hour rule (HARD)
+
+**NEVER adopt a dependency version (any ecosystem: cargo, pip, npm, gomod,
+GitHub Actions) that was published less than 72 hours ago.** This is the
+supply-chain guard against freshly-poisoned releases; the malicious-release
+window is typically hours-to-days before detection/yank.
+
+- Automated updates: enforced by `cooldown: default-days: 3` in
+  `.github/dependabot.yml` — do not weaken it.
+- Manual bumps (including merging Dependabot PRs and editing versions by hand):
+  **verify the release timestamp first** (`gh api repos/<owner>/<repo>/releases`,
+  crates.io/PyPI/npm publish dates) and refuse anything younger than 72h; wait
+  it out instead.
+- Security fixes are not an exception — a 72h-old patched release is still
+  required; if none exists yet, prefer temporary mitigation over adopting a
+  minutes-old release.
+
 ## Build gate — `just ci`
 
 The canonical gate is **`just ci`**: `cargo fmt --all --check` + `cargo clippy

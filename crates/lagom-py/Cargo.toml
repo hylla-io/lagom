@@ -34,7 +34,8 @@ tokio = { version = "1", features = ["rt", "macros"] }
 # *binary*) fail to resolve the Py* symbols. maturin turns it on for the wheel
 # via the `extension-module` feature below (pyproject `[tool.maturin] features`),
 # while the Rust unit tests build/link against a real interpreter without it.
-pyo3 = { version = "0.23", features = ["abi3-py39"] }
+# 0.29+ fixes two RustSec-tracked vulnerabilities in earlier pyo3 lines.
+pyo3 = { version = "0.29", features = ["abi3-py39"] }
 
 [features]
 # Re-exported so maturin can enable `pyo3/extension-module` for the wheel build.
