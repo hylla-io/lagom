@@ -38,4 +38,5 @@ toml = "0.8"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
+# 0.29+ required: fixes two RustSec advisories exposed in earlier lines.
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
