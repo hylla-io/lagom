@@ -34,11 +34,12 @@ spec-cross-checked feature inventory lives in [`FEATURES.md`](FEATURES.md).
 ## Install
 
 lagom installs **straight from this repo** — Go-style, no registry account
-needed on either side. Pin a tag for reproducible installs once tags exist.
-(Registry publishing to crates.io / PyPI / npm is wired in
-[`.github/workflows/release.yml`](.github/workflows/release.yml) and switches on
-per-registry when its token secret is added — see
-[`docs/RELEASING.md`](docs/RELEASING.md); until then those jobs skip cleanly.)
+needed on either side. Pin a tag (e.g. `v0.1.0`) for reproducible installs.
+(Registry publishing to crates.io / PyPI / npm is **planned** — the pipeline is
+wired in [`.github/workflows/release.yml`](.github/workflows/release.yml) and
+switches on per-registry when its token secret is added; until then those jobs
+skip cleanly. See [`ROADMAP.md`](ROADMAP.md) for the plan and its triggers, and
+[`docs/RELEASING.md`](docs/RELEASING.md) for mechanics.)
 
 ### CLI
 
