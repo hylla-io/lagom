@@ -172,7 +172,7 @@ jobs:
         if: steps.token.outputs.present == 'true'
       - uses: oven-sh/setup-bun@v2
         if: steps.token.outputs.present == 'true'
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         if: steps.token.outputs.present == 'true'
         with:
           version: 10
