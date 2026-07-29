@@ -143,4 +143,46 @@ impl Policy {
             .and_then(|t| t.presence)
             .unwrap_or(self.default_presence)
     }
+
+    /// Every name this policy carries an explicit rule for, in both spellings:
+    /// the upstream key and, when set, the projected `rename`.
+    ///
+    /// This is the *governed* name set — the names whose authority (presence,
+    /// pins, constraints) lagom decides. Names outside it fall to
+    /// `default_presence`.
+    fn governed_names(&self) -> impl Iterator<Item = &str> {
+        self.tools.iter().flat_map(|(upstream, tp)| {
+            std::iter::once(upstream.as_str()).chain(tp.rename.as_deref())
+        })
+    }
+
+    /// The governed name that `name` differs from only by Unicode case, if any.
+    ///
+    /// Used by [`crate::rewrite`] to REFUSE such a name: forwarding e.g. `SEARCH`
+    /// when the policy governs `search` would hand the decision to the upstream's
+    /// name matching, and a lenient upstream would then run the governed tool
+    /// without the policy's presence/pin/constraint rules. Verified hole, not
+    /// hypothetical: a reviewer observed a dropped tool's upstream receiving
+    /// `"name": "SEARCH"`.
+    ///
+    /// WHY case folding appears here and NOWHERE in the resolve path: folding to
+    /// *deny* only ever narrows the set of accepted names; folding to *match*
+    /// would widen it, minting extra spellings for every governed tool. Do not
+    /// "improve" this into lookup — lagom resolves names by exact equality and
+    /// refuses everything else.
+    ///
+    /// Only meaningful for a `name` with no exact rule; an exactly governed name
+    /// resolves on its own rule and never consults this.
+    ///
+    /// Residual (case only, by construction): folding catches case variants, not
+    /// every spelling an upstream might resolve leniently — e.g. interior
+    /// zero-width or bidi characters, NFKC-equivalent or full-width forms, or
+    /// `-`/`_` swaps survive it. Those are refused only when the policy's default
+    /// presence is `Drop`, or once the authoritative upstream tool surface is
+    /// threaded into the rewrite decision.
+    pub(crate) fn case_shadowed_governed_name(&self, name: &str) -> Option<&str> {
+        let folded = name.to_lowercase();
+        self.governed_names()
+            .find(|governed| governed.to_lowercase() == folded)
+    }
 }

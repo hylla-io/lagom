@@ -5,6 +5,12 @@
 //! maps a renamed tool back to its upstream name. Disallowed calls are rejected
 //! *before* reaching the upstream, with a message stating why (errors are never
 //! swallowed — §9.1).
+//!
+//! Name resolution is EXACT and fail-closed: a name lagom cannot resolve by
+//! exact equality is refused here rather than forwarded for the upstream to
+//! interpret, so a lenient upstream's name matching can never become the thing
+//! that decides which tool runs. What that does and does not cover is stated on
+//! [`resolve`] and on [`Policy::case_shadowed_governed_name`].
 
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -38,8 +44,7 @@ impl std::error::Error for Reject {}
 
 /// Rewrite a projected call into the upstream call, or reject it.
 pub fn rewrite(call: &ToolCall, policy: &Policy) -> Result<ToolCall, Reject> {
-    let (upstream_name, tp) = resolve(policy, &call.name)
-        .ok_or_else(|| Reject::new(format!("unknown or unavailable tool: `{}`", call.name)))?;
+    let (upstream_name, tp) = resolve(policy, &call.name)?;
 
     let mut arguments: Map<String, Value> = match &call.arguments {
         Value::Object(map) => map.clone(),
@@ -75,34 +80,83 @@ pub fn rewrite(call: &ToolCall, policy: &Policy) -> Result<ToolCall, Reject> {
 }
 
 /// Resolve a projected (possibly renamed) tool name to its upstream name plus
-/// the tool policy. Returns `None` for dropped or hidden-behind-rename tools.
-fn resolve<'a>(policy: &'a Policy, name: &str) -> Option<(String, Option<&'a ToolPolicy>)> {
+/// the tool policy, or say why the call is refused.
+///
+/// Every lookup here is EXACT string equality. A name lagom cannot resolve
+/// exactly is refused, never forwarded for the upstream to interpret: an
+/// upstream that matches names leniently would otherwise reach a tool through a
+/// spelling the policy never decided on (case variant, padded name), skipping
+/// that tool's presence/pin/constraint rules. Refusal keeps the decision here.
+/// See [`Policy::case_shadowed_governed_name`] for why the only folding in this
+/// module denies and never matches, and for what that check does NOT cover.
+fn resolve<'a>(policy: &'a Policy, name: &str) -> Result<(String, Option<&'a ToolPolicy>), Reject> {
     // A renamed tool is callable only by its new name.
     for (upstream, tp) in &policy.tools {
         if tp.rename.as_deref() == Some(name) {
             return match policy.presence_of(upstream) {
-                Presence::Keep => Some((upstream.clone(), Some(tp))),
-                Presence::Drop => None,
+                Presence::Keep => Ok((upstream.clone(), Some(tp))),
+                Presence::Drop => Err(unavailable(name, "the tool it renames is dropped")),
             };
         }
     }
 
     if let Some(tp) = policy.tools.get(name) {
         // The original name is hidden once the tool is renamed away.
-        if tp.rename.is_some() {
-            return None;
+        if let Some(rename) = &tp.rename {
+            return Err(unavailable(
+                name,
+                &format!("renamed away; callable only as `{rename}`"),
+            ));
         }
         return match policy.presence_of(name) {
-            Presence::Keep => Some((name.to_string(), Some(tp))),
-            Presence::Drop => None,
+            Presence::Keep => Ok((name.to_string(), Some(tp))),
+            Presence::Drop => Err(unavailable(name, "dropped by policy")),
         };
     }
 
-    // No explicit rule: callable iff the default keeps it (passthrough).
-    match policy.default_presence {
-        Presence::Keep => Some((name.to_string(), None)),
-        Presence::Drop => None,
+    // No exact rule. Two fail-closed refusals come BEFORE the default decides,
+    // because a default of `Keep` would otherwise forward the name verbatim.
+    if let Some(governed) = policy.case_shadowed_governed_name(name) {
+        return Err(unavailable(
+            name,
+            &format!(
+                "no exact rule; differs only by case from `{governed}`, which this policy \
+                 governs — lagom matches tool names exactly and refuses variants"
+            ),
+        ));
     }
+    if name.is_empty() || name != name.trim() {
+        // Empty (the proxy defaults a missing `params.name` to "") or padded with
+        // whitespace. Such a name is not the exact name of any tool lagom has a
+        // rule for, and forwarding it relies on upstream trimming. An upstream
+        // tool whose real name is empty or padded is reachable only by giving it
+        // an explicit rule in the policy — an exact match, made deliberately.
+        return Err(unavailable(
+            name,
+            "not an exact tool name (empty or whitespace-padded)",
+        ));
+    }
+
+    // Unrelated to anything governed: the default decides (passthrough when
+    // `Keep`). NOTE the remaining fail-open surface — under `Keep`, lagom admits
+    // a name it knows nothing about, including a non-case variant of an UNGOVERNED
+    // upstream tool. Closing that needs the authoritative upstream `tools/list`
+    // surface, which this function is not given; it is already probed at mint
+    // time (`lagom-proxy`'s `spawn_and_validate` → `Server::upstream_defs`) and
+    // held by `Guard`, so threading it in is plumbing, not new knowledge.
+    match policy.default_presence {
+        Presence::Keep => Ok((name.to_string(), None)),
+        Presence::Drop => Err(unavailable(name, "no rule and the policy default is drop")),
+    }
+}
+
+/// Build the refusal for an unresolvable tool name.
+///
+/// The `unknown or unavailable tool` prefix is the stable wire text (annotated
+/// downstream per `SPEC.md` §9.1); `why` appends the specific cause so a refusal
+/// is diagnosable instead of uniformly opaque.
+fn unavailable(name: &str, why: &str) -> Reject {
+    Reject::new(format!("unknown or unavailable tool: `{name}` — {why}"))
 }
 
 fn check_constraint(arg: &str, value: &Value, constraint: &Constraint) -> Result<(), Reject> {
@@ -274,5 +328,122 @@ mod tests {
     fn sealed_default_rejects_unlisted() {
         let p = Policy::sealed();
         assert!(rewrite(&ToolCall::new("anything", json!({})), &p).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Name-variant fail-closed (`SPEC.md` §4, §9.1). A reviewer executed the
+    // hole these lock: under a default-KEEP policy that drops `search`, the
+    // names `SEARCH` and `search ` fell through to the default and were
+    // FORWARDED, and an upstream that resolves names leniently would then run
+    // the dropped tool. Refusal — never a wider match — is the fix.
+    // -----------------------------------------------------------------------
+
+    /// The policy shape the reviewer exploited: default keep, `search` dropped.
+    fn default_keep_drops_search() -> Policy {
+        policy_with(
+            "search",
+            ToolPolicy {
+                presence: Some(Presence::Drop),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn case_variant_of_a_governed_name_is_refused() {
+        let p = default_keep_drops_search();
+        for name in ["SEARCH", "Search", "sEaRcH"] {
+            let err = rewrite(&ToolCall::new(name, json!({"query": "x"})), &p)
+                .unwrap_err_or_else_name(name);
+            assert!(
+                err.message.contains("search"),
+                "reject must name the governed tool it shadows: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn whitespace_variant_is_refused_listed_or_not() {
+        let dropped = default_keep_drops_search();
+        for name in ["search ", " search", "\tsearch", "search\n"] {
+            rewrite(&ToolCall::new(name, json!({})), &dropped).unwrap_err_or_else_name(name);
+            // Also refused with no rule at all: a padded name is never an exact
+            // tool name, so it cannot ride the default-keep passthrough either.
+            rewrite(&ToolCall::new(name, json!({})), &Policy::passthrough())
+                .unwrap_err_or_else_name(name);
+        }
+    }
+
+    #[test]
+    fn empty_tool_name_is_refused_under_passthrough() {
+        // The proxy defaults a missing `params.name` to "" — that must not be
+        // forwarded as a tool call.
+        rewrite(&ToolCall::new("", json!({})), &Policy::passthrough()).unwrap_err_or_else_name("");
+    }
+
+    #[test]
+    fn case_variant_cannot_evade_a_pin() {
+        let mut args = BTreeMap::new();
+        args.insert("artifact".to_string(), ArgPolicy::Pin(json!("hylla")));
+        let p = policy_with(
+            "search",
+            ToolPolicy {
+                args,
+                ..Default::default()
+            },
+        );
+        // Exact name: the pin is inescapable.
+        let out = rewrite(&ToolCall::new("search", json!({"artifact": "evil"})), &p).unwrap();
+        assert_eq!(out.arguments["artifact"], json!("hylla"));
+        // Case variant: refused, so there is no pin-free forward of this tool.
+        rewrite(&ToolCall::new("SEARCH", json!({"artifact": "evil"})), &p)
+            .unwrap_err_or_else_name("SEARCH");
+    }
+
+    #[test]
+    fn rename_still_resolves_exactly_while_its_variants_are_refused() {
+        let p = policy_with(
+            "search",
+            ToolPolicy {
+                rename: Some("find".to_string()),
+                ..Default::default()
+            },
+        );
+        // Legitimate rename behaviour is untouched.
+        let out = rewrite(&ToolCall::new("find", json!({"query": "x"})), &p).unwrap();
+        assert_eq!(out.name, "search");
+        // Variants of BOTH the projected and the upstream spelling are refused.
+        for name in ["FIND", "find ", "SEARCH", "search"] {
+            rewrite(&ToolCall::new(name, json!({})), &p).unwrap_err_or_else_name(name);
+        }
+    }
+
+    #[test]
+    fn unrelated_unlisted_name_still_passes_through() {
+        // The refusal is scoped: it does NOT turn default-keep into a sealed
+        // policy. A name that resembles nothing governed still follows the
+        // default — this is the residual the upstream-surface plumbing closes.
+        let p = default_keep_drops_search();
+        let out = rewrite(&ToolCall::new("grep", json!({"pattern": "x"})), &p).unwrap();
+        assert_eq!(out.name, "grep");
+    }
+
+    /// Test-only sugar: assert a call was refused, naming it in the panic so a
+    /// regression says *which* variant leaked instead of just "unwrap on Ok".
+    trait MustReject {
+        fn unwrap_err_or_else_name(self, name: &str) -> Reject;
+    }
+
+    impl MustReject for Result<ToolCall, Reject> {
+        fn unwrap_err_or_else_name(self, name: &str) -> Reject {
+            match self {
+                Ok(forwarded) => panic!(
+                    "name variant `{name}` must be refused, was forwarded as `{}`",
+                    forwarded.name
+                ),
+                Err(reject) => reject,
+            }
+        }
     }
 }
