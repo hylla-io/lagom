@@ -29,9 +29,28 @@ const PROFILE_DIR: &str = ".lagom";
 ///    `$HOME/.config/lagom/lagom.toml` when `XDG_CONFIG_HOME` is unset.
 ///
 /// Only paths that exist on disk are returned, de-duplicated while preserving
-/// order. An empty vec means no config was found. The explicit `--config` path is
-/// *not* handled here — the caller prepends it (see [`super::load_discovered`]).
+/// order. An empty vec means no config was found — [`search_paths`] then says
+/// *where* lagom looked. The explicit `--config` path is *not* handled here — the
+/// caller prepends it (see [`super::load_discovered`]).
 pub fn discover(start: impl AsRef<Path>) -> Vec<PathBuf> {
+    let mut found = search_paths(start);
+    found.retain(|path| path.exists());
+    found
+}
+
+/// The candidate paths [`discover`] inspects, highest precedence first —
+/// including ones that do **not** exist.
+///
+/// Exists because an empty [`discover`] result is silent about *where* lagom
+/// looked, so "no config here on purpose" and "my config never landed on a
+/// searched path" are indistinguishable — the misdiagnosis this list lets a
+/// caller rule out when it reports an unconfigured (passthrough) resolution.
+///
+/// Same layer order and de-duplication as [`discover`], minus the existence
+/// filter, so the two can never disagree about what was searched. Layer 2 is
+/// absent when no ancestor carries `.git`, layer 3 when neither
+/// `XDG_CONFIG_HOME` nor `HOME` is set.
+pub fn search_paths(start: impl AsRef<Path>) -> Vec<PathBuf> {
     let start = start.as_ref();
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -48,7 +67,7 @@ pub fn discover(start: impl AsRef<Path>) -> Vec<PathBuf> {
         candidates.push(dir.join(CONFIG_FILENAME));
     }
 
-    dedup_existing(candidates)
+    dedup(candidates)
 }
 
 /// List the named profiles available under `<dir>/.lagom/` (`SPEC.md` §6.4).
@@ -110,11 +129,12 @@ fn xdg_config_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config").join("lagom"))
 }
 
-/// Keep only paths that exist, de-duplicated while preserving order.
-fn dedup_existing(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+/// Drop repeated paths (cwd may *be* the project root) while preserving order,
+/// so a reported search list never claims lagom looked at one path twice.
+fn dedup(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen: Vec<PathBuf> = Vec::new();
     for path in candidates {
-        if path.exists() && !seen.contains(&path) {
+        if !seen.contains(&path) {
             seen.push(path);
         }
     }
@@ -169,6 +189,51 @@ mod tests {
         // Isolate from any real $HOME/XDG config by pointing XDG at the temp dir.
         temp_env_xdg(&tmp.path, || {
             assert!(discover(&tmp.path).is_empty());
+        });
+    }
+
+    #[test]
+    fn search_paths_lists_absent_candidates_in_precedence_order() {
+        // The reporting contract: with nothing on disk, `discover` is empty but
+        // `search_paths` still names every layer it looked at, cwd first, XDG
+        // last. Without this an operator cannot tell a missed config from an
+        // intentionally unconfigured run.
+        let tmp = TempDir::new("searched");
+        let xdg = tmp.path.join("xdg");
+        fs::create_dir_all(&xdg).unwrap();
+        temp_env_xdg(&xdg, || {
+            let searched = search_paths(&tmp.path);
+            assert!(
+                discover(&tmp.path).is_empty(),
+                "fixture must have no config on disk"
+            );
+            assert_eq!(
+                searched,
+                vec![
+                    tmp.path.join("lagom.toml"),
+                    xdg.join("lagom").join("lagom.toml"),
+                ],
+                "absent candidates are still reported, highest precedence first"
+            );
+        });
+    }
+
+    #[test]
+    fn search_paths_does_not_repeat_cwd_as_project_root() {
+        // cwd *is* the project root here; the searched list must not double-report
+        // the same path, or the diagnostic misleads about where lagom looked.
+        let tmp = TempDir::new("searched-root");
+        fs::create_dir_all(tmp.path.join(".git")).unwrap();
+        let xdg = tmp.path.join("xdg");
+        fs::create_dir_all(&xdg).unwrap();
+        temp_env_xdg(&xdg, || {
+            assert_eq!(
+                search_paths(&tmp.path),
+                vec![
+                    tmp.path.join("lagom.toml"),
+                    xdg.join("lagom").join("lagom.toml"),
+                ]
+            );
         });
     }
 

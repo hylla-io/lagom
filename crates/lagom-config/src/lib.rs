@@ -26,7 +26,7 @@ mod discover;
 mod schema;
 mod toml_model;
 
-pub use discover::{discover, profiles, resolve_profile};
+pub use discover::{discover, profiles, resolve_profile, search_paths};
 pub use schema::json_schema;
 pub use toml_model::{LowerError, TomlArgPolicy, TomlPolicy, TomlToolPolicy};
 
