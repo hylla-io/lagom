@@ -9,6 +9,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command as StdCommand, Stdio};
+use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -744,6 +745,202 @@ fn refire_with_gating_record_stays_silent() {
         !stderr.contains("nothing is gated"),
         "a recorded pin gates the upstream: {stderr}"
     );
+}
+
+/// Mirror of `app.rs`'s `PREFLIGHT_STDIN_WAIT` (2s). Duplicated as a literal
+/// because `lagom-cli` ships a `[[bin]]` and no lib target, so an integration test
+/// cannot import the constant; `preflight_failure_waits_the_bounded_read_then_exits_silently`
+/// is what couples them — raise one without the other and it goes red.
+const PREFLIGHT_STDIN_WAIT: Duration = Duration::from_secs(2);
+
+/// Mirror of `app.rs`'s `PREFLIGHT_ERROR_CODE`, same reason as above.
+const PREFLIGHT_ERROR_CODE: i64 = -32002;
+
+/// Outer bound for a pre-flight run: generous on purpose (7.5x the bounded wait) so
+/// it cannot be the assertion that discriminates. The `>= PREFLIGHT_STDIN_WAIT`
+/// lower bound is; this only catches a wait that never ends.
+const PREFLIGHT_OUTER_BOUND: Duration = Duration::from_secs(15);
+
+/// Run `lagom` on real pipes, optionally writing ONE line to its stdin, and return
+/// its output plus wall-clock elapsed.
+///
+/// The stdin write end is taken out of the `Child` and held to the end:
+/// `std::process::Child::wait`/`wait_with_output` close `self.stdin` first, which
+/// would hand the CLI an immediate EOF and make a "bounded read" test pass without
+/// any bound existing. `stderr` is piped so the original cause can be asserted.
+fn preflight_run(args: &[&str], stdin_line: Option<&str>) -> (std::process::Output, Duration) {
+    let dir = empty_cwd();
+    let started = Instant::now();
+    let mut child = StdCommand::new(env!("CARGO_BIN_EXE_lagom"))
+        .current_dir(&dir)
+        // Config discovery walks cwd, HOME and XDG_CONFIG_HOME; point all three at
+        // the empty dir so a stray real `lagom.toml` cannot change which cause fires.
+        .env("HOME", &dir)
+        .env("XDG_CONFIG_HOME", &dir)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn lagom");
+    let mut held = child.stdin.take().expect("piped stdin");
+    if let Some(line) = stdin_line {
+        held.write_all(line.as_bytes()).unwrap();
+        held.write_all(b"\n").unwrap();
+        held.flush().unwrap();
+    }
+    let out = child.wait_with_output().expect("await lagom exit");
+    let elapsed = started.elapsed();
+    drop(held);
+    (out, elapsed)
+}
+
+#[test]
+fn preflight_failure_answers_initialize_with_one_jsonrpc_error() {
+    // LGM-6: a pre-flight failure used to close stdout without a JSON-RPC byte, so
+    // every distinct cause reached the harness as one opaque
+    // `connection closed: initialize response`. Both serving surfaces must instead
+    // answer the harness's own `initialize` id with the cause.
+    //
+    // Two surfaces, two id JSON types (number and string) so the echo is proven
+    // verbatim rather than coerced.
+    let record = "/no/such/mint.json";
+    let cases: &[(&str, Vec<&str>, serde_json::Value, &str)] = &[
+        (
+            // Cause: upstream spawn (`ProxyError::Upstream`), inside warn_then_spawn.
+            "serve, upstream spawn failure, numeric id",
+            vec!["serve", "--", "/no/such/upstream-bin"],
+            serde_json::json!(7),
+            "upstream child",
+        ),
+        (
+            // Cause: `read_mint_record` (`CliError::Record`), before any child exists.
+            "refire, unreadable mint record, string id",
+            vec!["refire", "--record", record],
+            serde_json::json!("init-42"),
+            "mint record",
+        ),
+    ];
+
+    for (label, args, id, stderr_needle) in cases {
+        let request =
+            serde_json::json!({"jsonrpc":"2.0","id":id,"method":"initialize","params":{}});
+        let (out, _) = preflight_run(args, Some(&request.to_string()));
+
+        assert!(
+            !out.status.success(),
+            "{label}: a pre-flight failure still exits non-zero"
+        );
+        let stdout = String::from_utf8(out.stdout.clone()).expect("stdout is UTF-8");
+        let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "{label}: exactly ONE frame may go on the wire, got {stdout:?}"
+        );
+        let reply: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("the reply is a JSON-RPC frame");
+        assert_eq!(reply["jsonrpc"], serde_json::json!("2.0"), "{label}");
+        assert_eq!(
+            reply["id"], *id,
+            "{label}: the harness's exact id must be echoed for correlation"
+        );
+        assert_eq!(
+            reply["error"]["code"],
+            serde_json::json!(PREFLIGHT_ERROR_CODE),
+            "{label}: the pre-flight code distinguishes 'never started' from a reject"
+        );
+        assert!(
+            reply.get("result").is_none(),
+            "{label}: a failure may never look like a result: {reply}"
+        );
+        let message = reply["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(stderr_needle),
+            "{label}: the reply must name the cause, got {message:?}"
+        );
+        // The reply is additive: stderr still explains the cause on its own.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(stderr_needle),
+            "{label}: stderr must stay intact, got {stderr:?}"
+        );
+    }
+
+    // Scope control: `validate` is not a serving surface, so nothing correlates and
+    // stdout must stay byte-empty even fed the same request. Without this the tests
+    // above would pass on an unconditional reply from any subcommand.
+    let request = serde_json::json!({"jsonrpc":"2.0","id":7,"method":"initialize","params":{}});
+    let (out, _) = preflight_run(
+        &["validate", "--", "/no/such/upstream-bin"],
+        Some(&request.to_string()),
+    );
+    assert!(!out.status.success(), "validate still exits non-zero");
+    assert!(
+        out.stdout.is_empty(),
+        "validate must not answer a JSON-RPC frame: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn preflight_failure_waits_the_bounded_read_then_exits_silently() {
+    // THE falsifier for the bounded read. stdin is piped and held OPEN with nothing
+    // written, so the CLI cannot see EOF: the only thing that can end its wait is
+    // its own bound. "exits within a generous bound" would pass with no bound at all
+    // (the pre-LGM-6 binary exited in milliseconds), so the discriminating assertion
+    // is the LOWER one — elapsed >= PREFLIGHT_STDIN_WAIT.
+    let (out, elapsed) = preflight_run(&["refire", "--record", "/no/such/mint.json"], None);
+
+    assert!(
+        elapsed >= PREFLIGHT_STDIN_WAIT,
+        "the bounded stdin read must actually have run: elapsed {elapsed:?} < {PREFLIGHT_STDIN_WAIT:?}"
+    );
+    assert!(
+        elapsed < PREFLIGHT_OUTER_BOUND,
+        "the wait must be BOUNDED, not a hang: elapsed {elapsed:?}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "with nothing to correlate to, stdout stays byte-empty: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(!out.status.success(), "the cause still fails the run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("mint record"),
+        "stderr still explains the cause: {stderr:?}"
+    );
+}
+
+#[test]
+fn preflight_failure_does_not_answer_a_notification() {
+    // JSON-RPC 2.0 §4.1: a notification gets no reply. An absent `id` and an
+    // explicit null `id` are both non-correlatable, so answering either would put a
+    // stray frame on the harness's wire.
+    let cases: &[(&str, serde_json::Value)] = &[
+        (
+            "no id at all",
+            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        ),
+        (
+            "explicit null id",
+            serde_json::json!({"jsonrpc":"2.0","id":null,"method":"initialize"}),
+        ),
+    ];
+
+    for (label, line) in cases {
+        let (out, _) = preflight_run(
+            &["refire", "--record", "/no/such/mint.json"],
+            Some(&line.to_string()),
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "{label}: no reply may be written, got {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(!out.status.success(), "{label}: the cause still fails");
+    }
 }
 
 /// A throwaway empty directory to run `validate` from, so config *discovery*

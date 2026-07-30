@@ -6,8 +6,10 @@
 //! process; the shipped skill bytes are sourced from `lagom_proxy::SHIPPED_SKILLS`
 //! and written by `cmd_emit_skills`.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use lagom_audit::{AuditEvent, AuditLog};
@@ -153,6 +155,13 @@ enum Command {
 
 impl Cli {
     /// Dispatch the parsed command, returning the process exit code.
+    ///
+    /// The two SERVING arms are composed rather than called: `cmd_serve`/`cmd_refire`
+    /// stop at the pre-flight/bridge seam and yield a [`Preflighted`], and
+    /// [`bridge_or_correlate`] either bridges it or answers the harness's
+    /// `initialize` with the pre-flight cause (LGM-6). The other three arms yield an
+    /// [`ExitCode`] and so cannot reach that reply path — `Result<ExitCode, _>` is
+    /// not `Result<Preflighted, _>` (lock class: the type system, these arms).
     pub async fn run(self) -> Result<ExitCode, CliError> {
         match self.command {
             Command::Serve {
@@ -160,13 +169,13 @@ impl Cli {
                 audit,
                 run_id,
                 upstream,
-            } => cmd_serve(config, audit, run_id, upstream).await,
+            } => bridge_or_correlate(cmd_serve(config, audit, run_id, upstream).await).await,
             Command::Refire {
                 record,
                 audit,
                 run_id,
                 upstream,
-            } => cmd_refire(record, audit, run_id, upstream).await,
+            } => bridge_or_correlate(cmd_refire(record, audit, run_id, upstream).await).await,
             Command::Emit {
                 config,
                 name,
@@ -252,9 +261,14 @@ enum PolicyOrigin<'a> {
 /// A structural test is therefore silent on exactly the shapes where an operator
 /// sees a `[tools.…]` section and concludes they are gated.
 ///
-/// It is also never "discovery found nothing": a 0-byte or comment-only
-/// `lagom.toml` *is* discovered (so `loaded` is non-empty) yet lowers to the
-/// zero-config passthrough (`lagom-config`'s `empty_document_is_passthrough`).
+/// The condition is also NOT equivalent to "discovery found nothing": a 0-byte
+/// `lagom.toml` *is* discovered (`discover` filters on existence, so `loaded` is
+/// non-empty) yet lowers to the zero-config passthrough — `lagom-config`'s
+/// `empty_document_is_passthrough` asserts `lower("")` equals
+/// `Policy::passthrough()`. A comment-only file parses to the same empty table but
+/// has no test of its own. `ungated_warning_separates_a_vacuous_config_from_a_missing_one`
+/// (below) locks the rendering half: a discovered-but-vacuous config must not be
+/// reported as undiscovered.
 ///
 /// stderr ONLY: `serve`/`refire` own stdout as their JSON-RPC channel, so any byte
 /// written there corrupts the protocol. Never an error and never a refusal to
@@ -330,8 +344,11 @@ fn policy_restricts(policy: &serde_json::Value) -> bool {
     if map.keys().any(|k| !POLICY_KEYS.contains(&k.as_str())) {
         return true;
     }
-    // `default_presence` is always serialized (no `skip_serializing_if`), so
-    // anything other than an explicit "keep" is either the seal or unrecognised.
+    // `default_presence` carries `#[serde(default = …)]` and no
+    // `skip_serializing_if` (`lagom-core`'s `policy.rs:104-106`), so it is present in
+    // the serialized form and anything other than an explicit "keep" is either the
+    // seal or unrecognised. `missing default_presence` is covered anyway, by
+    // `unrecognised_policy_shapes_count_as_restricting`.
     if map.get("default_presence").and_then(|v| v.as_str()) != Some("keep") {
         return true;
     }
@@ -488,10 +505,14 @@ fn missing_config_warning(searched: &[PathBuf], cwd: &Path) -> String {
          every upstream tool is exposed unchanged and nothing is gated.\n",
     );
     if searched.is_empty() {
-        // Defensive: `lagom_config::search_paths` always yields at least the cwd
-        // candidate, so this is unreachable from the shipped call path today. Kept
-        // so a future layer-1 change cannot silently render an empty list, and the
-        // remedy below omits "the paths above" because there are none.
+        // Defensive: `lagom_config::search_paths` pushes the cwd candidate
+        // unconditionally before any layer test (`lagom-config`'s
+        // `discover.rs:57-58`), so its result is non-empty and this arm is
+        // unreachable from that call path as committed. Kept so a future layer-1
+        // change cannot silently render an empty list — this arm's explicit text and
+        // the omission of "the paths above" (there are none to point at) are locked
+        // by `unconfigured_warning_is_explicit_when_no_candidate_exists`, which calls
+        // this renderer with `&[]` and asserts both.
         out.push_str("lagom:   searched: (no candidate paths could be formed)\n");
         out.push_str("lagom:   pass --config <path> to gate the upstream.");
         return out;
@@ -564,49 +585,297 @@ fn resolve(config: Option<PathBuf>, upstream: Vec<String>) -> Result<ResolvedPol
     Ok(resolved)
 }
 
-/// The **only** place this crate hands a policy to the proxy: warn if it restricts
-/// nothing, then run the session (audited when `log` is present).
+/// Warn if the resolved policy restricts nothing, then spawn/probe/drift-check the
+/// session and hand back the un-bridged handle. Both serving surfaces — `serve` and
+/// `refire` — route through here; [`bridge_or_correlate`] performs the bridge step.
 ///
 /// `refire` shipped with no ungated diagnostic because it grew its own copy of the
 /// "serve or serve_audited" tail, and it fronts agents exactly as `serve` does.
-/// Funnelling both through here makes that omission impossible: a surface cannot
-/// serve without passing an `origin` for the warning. Locked by
-/// `every_serving_surface_goes_through_one_call_site`.
-async fn warn_then_serve(
+/// The two steps are split here rather than delegated to a spawn+run wrapper so
+/// there is a pre-flight/bridge seam: [`lagom_proxy::spawn_and_validate`] returns
+/// once the child is spawned, probed and drift-checked but before any traffic
+/// moves, and `Server::run` — the step that bridges — happens at the seam's far
+/// side in [`bridge_or_correlate`]. LGM-6 needs that split: a reply on stdout is
+/// legitimate only while nothing else owns stdout.
+///
+/// **What is mechanically enforced** — lock class: a named test,
+/// `every_serving_surface_goes_through_one_call_site` (below). It COUNTS proxy
+/// entrypoint names in this file's source: `lagom_proxy::serve` and
+/// `lagom_proxy::serve_audited` at 0, `lagom_proxy::spawn_and_validate` and
+/// `lagom_proxy::validate_only` at 1 each. So adding a call IN THIS FILE to either
+/// spawn+run wrapper — the shorthand `refire` skipped the warning with — turns that
+/// test red, as does adding a second `spawn_and_validate` call site here.
+///
+/// **What it does NOT enforce**, enumerated rather than implied:
+/// - It is a COUNT over this file's text, not a LOCATION and not an exclusivity
+///   lock. Moving the `spawn_and_validate` call out of this function into another
+///   surface *in this file* keeps the count at 1 and stays green; nothing here makes
+///   that surface call [`warn_if_ungated`]. (Moving it to another file would instead
+///   read 0 and fail — the tripwire sees only `app.rs`.)
+/// - It is textual, so aliasing (`use lagom_proxy::spawn_and_validate as x`) or a
+///   renamed re-export evades it — see the test's own residual note.
+/// - `origin` being mandatory is the type system, but that binds only calls already
+///   routed through this function.
+async fn warn_then_spawn(
     resolved: ResolvedPolicy,
     log: Option<AuditLog>,
     run_id: String,
     origin: PolicyOrigin<'_>,
     cwd: &Path,
-) -> Result<(), CliError> {
+) -> Result<Preflighted, CliError> {
     // Before the JSON-RPC session starts, so an operator sees the diagnostic at the
     // top of the session's stderr rather than interleaved with traffic.
     warn_if_ungated(&resolved, &origin, cwd);
-    match log {
-        None => lagom_proxy::serve(resolved).await?,
-        Some(log) => lagom_proxy::serve_audited(resolved, Some(log), run_id).await?,
-    }
-    Ok(())
+    // Together with `bridge_or_correlate` this is what `lagom_proxy::serve_audited`
+    // does (`bridge.rs`, `serve_audited`: spawn_and_validate, then
+    // `server.run(audit, run_id)`), split at the seam. One difference from the
+    // previous un-audited arm: `lagom_proxy::serve` hardcodes `run_id = "run"`, and
+    // this passes the caller's instead. Inert with `log == None` — `run_id` reaches
+    // only `bridge.rs`'s `record()` calls, and `record` no-ops when the log is
+    // `None`, so no wire bytes and no stderr depend on it. With `Some(log)` the
+    // run_id was already the caller's.
+    let server = lagom_proxy::spawn_and_validate(resolved).await?;
+    Ok(Preflighted {
+        server,
+        log,
+        run_id,
+    })
 }
 
-/// `lagom serve`: discover/merge the policy, spawn the upstream, drift-validate,
-/// then run the stdio proxy until the session ends.
+/// JSON-RPC error code lagom answers a pre-flight failure with.
 ///
-/// With `--audit <path>` the session is routed through
-/// [`lagom_proxy::serve_audited`], which opens an append-only JSONL log and
-/// records the original upstream defs + resolved policy at session start and
-/// every rewrite/rejection thereafter, tagged with `run_id` (`SPEC.md` §8.2,
-/// §9.3). Without the flag this is byte-for-byte the prior behavior
-/// (`serve`, no audit log).
+/// Distinct from `bridge.rs`'s `REJECT_ERROR_CODE` (`-32001`) on purpose: a harness
+/// log must be able to tell "lagom refused this `tools/call`" from "lagom never
+/// started". Both live in `-32000..=-32099`, the band the JSON-RPC 2.0 spec's error
+/// object table (§5.1) reserves for implementation-defined server errors.
+const PREFLIGHT_ERROR_CODE: i64 = -32002;
+
+/// Budget for the correlation read on stdin after a pre-flight failure — one
+/// `read_line` on a detached thread, no loop, as [`reply_preflight_error`]'s body is
+/// written. No test pins that read count.
+///
+/// 2s: slack for a harness that has not yet written `initialize` when lagom fails,
+/// not a poll interval — one read, then done. Short because the wait is pure cost
+/// when nothing arrives, e.g. for a human running `lagom serve` in a terminal, who
+/// would otherwise watch a failed process sit there. Real harness write latency is
+/// not measured here, so treat the value as a budget, not a fitted number.
+/// CLI-owned rather than reusing a `bridge.rs` timeout: those bound the UPSTREAM's
+/// latency, a different quantity with different tuning pressure.
+///
+/// That the wait is really taken (rather than short-circuited by an EOF the test
+/// harness accidentally supplied) is locked by
+/// `preflight_failure_waits_the_bounded_read_then_exits_silently` (`tests/cli.rs`),
+/// which holds stdin open, writes nothing, and asserts elapsed >= this value.
+const PREFLIGHT_STDIN_WAIT: Duration = Duration::from_secs(2);
+
+/// A session that is spawned, probed and drift-checked but has NOT yet taken over
+/// stdout, plus the audit wiring its bridge step needs.
+///
+/// The pre-flight/bridge seam as a value: on the path that builds one, the
+/// pre-flight stages listed on [`bridge_or_correlate`] have all returned `Ok`, so
+/// there the stdout reply belongs to the `Err` arm and the bridge to the `Ok` arm.
+///
+/// Scope of that: [`warn_then_spawn`] is the sole constructor as written, and the
+/// struct plus every field is private, so no module OUTSIDE this one and its
+/// descendants can build one (lock class: the type system, at that visibility
+/// boundary). Inside this module and its children — `mod tests` included, since Rust
+/// privacy reaches descendants — it is a convention: nothing stops a future function
+/// here from assembling one.
+struct Preflighted {
+    /// The validated upstream session, not yet bridged.
+    server: lagom_proxy::Server,
+    /// The audit log to record into, when `--audit` was given.
+    log: Option<AuditLog>,
+    /// The run id every audit record is tagged with (`SPEC.md` §8.2).
+    run_id: String,
+}
+
+/// Bridge a completed pre-flight, or — on a pre-bridge failure — answer the
+/// harness's `initialize` with a JSON-RPC error naming the cause, then fail.
+///
+/// ## Why (LGM-6)
+///
+/// A pre-flight failure wrote stderr and exited, closing stdout without a single
+/// JSON-RPC byte. Every distinct cause therefore reached the harness as the same
+/// opaque `connection closed: initialize response`, and correlating that to lagom's
+/// stderr cost a full debugging session. Answering the `initialize` id makes the
+/// cause arrive on the channel the harness is already reading.
+///
+/// ## Which causes are answered — enumerated, not "every failure"
+///
+/// The MECHANISM is "whatever `Err` reaches this function", so the list below is a
+/// reading of the current call graph rather than a filter. As `cmd_serve` and
+/// `cmd_refire` are written, that is: upstream-command parse and `current_dir`
+/// ([`sources`]); config discovery/IO/parse/lower and overlay merge
+/// ([`lagom_proxy::mint`], `lagom_proxy::mint_record`); audit-log open and the
+/// mint-record write; [`read_mint_record`]; and, inside [`warn_then_spawn`], the
+/// three failing arms of [`lagom_proxy::spawn_and_validate`] as committed — spawn
+/// (`spawn_child`), the probe (write failure, EOF, its own timeout, unusable
+/// `tools/list`), and drift.
+///
+/// Consequence, in both directions: a pre-flight cause added to either surface is
+/// answered without editing this list, while a cause MOVED to after the bridge stops
+/// being answered and would need this doc corrected. The reply's message is
+/// `CliError`'s `Display` — the same rendering `main.rs` gives stderr — so the two
+/// say the same thing.
+///
+/// ## What is NOT answered, enumerated rather than implied
+///
+/// - clap usage/parse errors and `--help`: clap exits from `Cli::parse()` in `main`
+///   before any of this runs.
+/// - `validate`, `emit`, `emit-skills`: not serving surfaces, so a JSON-RPC frame
+///   would be noise. They also cannot reach this function — their arms in
+///   [`Cli::run`] yield `Result<ExitCode, _>`, not `Result<Preflighted, _>` (lock
+///   class: the type system, as those arms are written).
+/// - failures after the bridge starts: `Server::run`'s `Err` returns below WITHOUT a
+///   reply, because the bridge owns stdout from its first byte and may already have
+///   answered that id — a second frame could duplicate it. As written, the only
+///   `run` call site is the `Ok` arm here and it does not call the reply helper;
+///   `preflight_reply_is_confined_to_the_pre_bridge_arm` (below) counts that helper
+///   at one call site, this function at two, and the bridge step in its
+///   `log`-argument form at one. Counts only: the test cannot see WHICH arm holds
+///   each.
+/// - a harness that writes nothing within [`PREFLIGHT_STDIN_WAIT`], a non-JSON or
+///   non-object line, a line without `method`, and a notification (absent or null
+///   `id`): stdout stays byte-empty. Two of those four are locked, in `tests/cli.rs`
+///   and each asserting `out.stdout.is_empty()`: the silent budget expiry by
+///   `preflight_failure_waits_the_bounded_read_then_exits_silently`, and both
+///   notification shapes by `preflight_failure_does_not_answer_a_notification`. The
+///   non-JSON, non-object and missing-`method` returns have no test of their own —
+///   they are read off the reply helper's body.
+///
+/// ## Scope of the harness-visibility claim
+///
+/// What is shown is that lagom answers `initialize` with the cause instead of
+/// closing stdout silently (the tests above assert the frame's id, code and
+/// message). How a given harness RENDERS that error — whether it surfaces the
+/// message or reports its own transport wording — is harness-specific and not
+/// measured here.
+async fn bridge_or_correlate(
+    preflighted: Result<Preflighted, CliError>,
+) -> Result<ExitCode, CliError> {
+    let Preflighted {
+        server,
+        log,
+        run_id,
+    } = match preflighted {
+        Ok(ready) => ready,
+        Err(error) => {
+            reply_preflight_error(&error);
+            return Err(error);
+        }
+    };
+    server.run(log, run_id).await?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Read at most one line from stdin, bounded by [`PREFLIGHT_STDIN_WAIT`], and if it
+/// is a JSON-RPC request — a JSON object carrying a `method` and a non-null `id` —
+/// write ONE JSON-RPC error object echoing that id to stdout.
+///
+/// Returns without writing a byte at FOUR guarded early returns below, covering five
+/// causes: the budget expires or the reader thread ended without sending (the
+/// `recv_timeout` guard); the line is not valid JSON, or is JSON but not an object
+/// (one `let Ok(Value::Object(_)) = … else` guard — also where EOF lands, since
+/// `read_line` at EOF yields `Ok(0)` and the thread sends the empty string); it has
+/// no `method`; or its `id` is absent/null. Of those, the budget case is locked by
+/// `preflight_failure_waits_the_bounded_read_then_exits_silently` and the
+/// absent/null-`id` case by `preflight_failure_does_not_answer_a_notification`
+/// (`tests/cli.rs`); the non-JSON, non-object and missing-`method` returns are read
+/// off the body and have no test of their own. Skipping a notification is JSON-RPC
+/// 2.0 §4.1 (a Notification gets no reply) — a stray frame is worse than no frame on
+/// a channel the harness is parsing.
+///
+/// The serialized value is the `error` literal below, so no `result` frame is built
+/// here; `preflight_failure_answers_initialize_with_one_jsonrpc_error` asserts both
+/// (the frame carries no `result` key, and stdout holds exactly one line).
+///
+/// A write failure goes to stderr and is otherwise dropped: the pre-flight cause is
+/// what the operator needs, and returning/reporting a broken-pipe error in its place
+/// would hide it. The caller returns the original `Err` either way.
+///
+/// Blocks the calling task for up to [`PREFLIGHT_STDIN_WAIT`], deliberately: no other
+/// lagom task is in flight here — the bridge's pumps are spawned inside
+/// `Server::run`, which has not been called, and the upstream child, if one was
+/// spawned, was killed inside `spawn_and_validate` before it returned `Err`
+/// (`bridge.rs`, the probe and drift arms).
+///
+/// The read runs on a DETACHED `std::thread`, not `tokio::task::spawn_blocking`:
+/// tokio 1.52.3's `io::stdin` docs (`src/io/stdin.rs:15-22`) state stdin "is
+/// implemented by using an ordinary blocking read on a separate thread, and it is
+/// impossible to cancel that read. This can make shutdown of the runtime hang until
+/// the user presses enter", and recommend exactly this — "spawn a thread dedicated to
+/// user input and use blocking IO directly in that thread". An OS thread is ended by
+/// process exit instead of joined at runtime shutdown. Cost, stated: that thread can
+/// still hold the read when the process exits, so a byte the harness wrote late is
+/// consumed and dropped — acceptable, this process is exiting non-zero and serves no
+/// traffic.
+fn reply_preflight_error(error: &CliError) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_ok() {
+            // Send failure means the receiver already timed out and went away: there
+            // is nobody to hand the line to and nothing to repair.
+            let _ = tx.send(line);
+        }
+    });
+    let Ok(line) = rx.recv_timeout(PREFLIGHT_STDIN_WAIT) else {
+        return;
+    };
+    let Ok(serde_json::Value::Object(request)) = serde_json::from_str(line.trim()) else {
+        return;
+    };
+    if !request.contains_key("method") {
+        return;
+    }
+    let Some(id) = request.get("id").filter(|id| !id.is_null()) else {
+        return;
+    };
+
+    let reply = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": PREFLIGHT_ERROR_CODE,
+            "message": format!("lagom pre-flight failed, no session started: {error}"),
+        }
+    });
+    // A local one-line writer: `lagom_proxy`'s `write_value`/`write_line` are private
+    // to that crate, and `Value`'s `Display` is already the compact one-line form the
+    // newline-delimited stdio framing wants (MCP `2025-11-25` transports, the same
+    // framing `bridge.rs`'s `write_line` produces).
+    let mut out = std::io::stdout().lock();
+    if let Err(io) = writeln!(out, "{reply}").and_then(|()| out.flush()) {
+        eprintln!(
+            "lagom: could not write the pre-flight error reply to stdout ({io}); the cause follows"
+        );
+    }
+}
+
+/// `lagom serve`'s PRE-FLIGHT: discover/merge the policy, open the audit log, spawn
+/// the upstream and drift-validate — stopping at the seam, before any traffic moves.
+/// [`Cli::run`] hands the result to [`bridge_or_correlate`], which runs the session.
+///
+/// Returning `Preflighted` instead of an `ExitCode` is what makes the `?`s in this
+/// body correlatable: each returns a pre-bridge cause to [`Cli::run`]'s composed
+/// serving arm, which answers the harness's `initialize` with it before exiting
+/// non-zero (LGM-6).
+///
+/// With `--audit <path>` this opens an append-only JSONL log and passes it along to
+/// `Server::run`; the bridge then records the original upstream defs + resolved
+/// policy at session start and every rewrite/rejection thereafter, tagged with
+/// `run_id` (`SPEC.md` §8.2, §9.3). Without the flag the same path runs with no log
+/// wired in, so nothing is recorded.
 async fn cmd_serve(
     config: Option<PathBuf>,
     audit: Option<PathBuf>,
     run_id: String,
     upstream: Vec<String>,
-) -> Result<ExitCode, CliError> {
+) -> Result<Preflighted, CliError> {
     let (sources, cwd) = sources(config, upstream)?;
-    // Mint (and, with `--audit`, open the trace) first, then serve through
-    // `warn_then_serve`: the ungated diagnostic tests the RESOLVED policy, so it
+    // Mint (and, with `--audit`, open the trace) first, then spawn through
+    // `warn_then_spawn`: the ungated diagnostic tests the RESOLVED policy, so it
     // cannot run any earlier.
     let (resolved, log) = match audit {
         None => (lagom_proxy::mint(&sources)?, None),
@@ -624,35 +893,38 @@ async fn cmd_serve(
             (resolved, Some(log))
         }
     };
-    warn_then_serve(
+    warn_then_spawn(
         resolved,
         log,
         run_id,
         PolicyOrigin::Discovered(&sources.config_paths),
         &cwd,
     )
-    .await?;
-    Ok(ExitCode::SUCCESS)
+    .await
 }
 
-/// `lagom refire`: re-mint the recorded resolved policy from a persisted
-/// [`MintRecord`] and serve it (`SPEC.md` §8.2).
+/// `lagom refire`'s PRE-FLIGHT: re-mint the recorded resolved policy from a
+/// persisted [`MintRecord`] and take it up to the seam (`SPEC.md` §8.2);
+/// [`Cli::run`] hands the result to [`bridge_or_correlate`], which serves it.
 ///
 /// Reads the record (a bare `MintRecord` JSON object, or a JSONL audit trace
 /// whose first `mint` event carries one), refires it (bypassing re-resolution so
 /// the exact recorded projection is reproduced even after the config drifted),
-/// then runs the stdio proxy. Trailing `--` args override the recorded upstream
-/// launch command; `--audit`/`--run-id` append a fresh trace for the refired run.
+/// then spawns/validates the upstream. Trailing `--` args override the recorded
+/// upstream launch command; `--audit`/`--run-id` append a fresh trace for the
+/// refired run.
 ///
-/// Serves through [`warn_then_serve`], so a recorded policy that restricts nothing
+/// Spawns through [`warn_then_spawn`], so a recorded policy that restricts nothing
 /// gets the same stderr diagnostic `serve` gives — this surface fronts agents the
-/// same way.
+/// same way. Same reason as `cmd_serve` for returning `Preflighted`: an unreadable
+/// record or a relocated-but-missing upstream is a pre-bridge cause the harness can
+/// be told about.
 async fn cmd_refire(
     record_path: PathBuf,
     audit: Option<PathBuf>,
     run_id: Option<String>,
     upstream_override: Vec<String>,
-) -> Result<ExitCode, CliError> {
+) -> Result<Preflighted, CliError> {
     let record = read_mint_record(&record_path)?;
     let run_id = run_id.unwrap_or_else(|| record.run_id.clone());
 
@@ -687,15 +959,14 @@ async fn cmd_refire(
         path: PathBuf::from("."),
         source,
     })?;
-    warn_then_serve(
+    warn_then_spawn(
         resolved,
         log,
         run_id,
         PolicyOrigin::Record(&record_path),
         &cwd,
     )
-    .await?;
-    Ok(ExitCode::SUCCESS)
+    .await
 }
 
 /// Read a [`MintRecord`] from disk, accepting either a bare record JSON object or
@@ -740,7 +1011,23 @@ fn cmd_emit(
 }
 
 /// `lagom validate`: spawn the upstream, fetch its live `tools/list`, and check
-/// every policy reference against it (`SPEC.md` §5.3). Exits non-zero on drift.
+/// the policy's references against it (`SPEC.md` §5.3). Exits non-zero on drift.
+///
+/// Goes through [`lagom_proxy::validate_only`], whose success type is
+/// [`lagom_proxy::Teardown`] — lock class: the type system. So no `Server` reaches
+/// this function *from that call*, and `Server`'s fields are private to `bridge`, so
+/// one cannot be rebuilt here from parts either. Scope: those two facts cover this
+/// call and this type, not the function's future shape — the funnel tripwire counts
+/// `spawn_and_validate` at 1 without pinning where it lives, so an edit that moved
+/// that call in here would stay green. As committed, the body below calls only
+/// `validate_only`.
+///
+/// `validate_only` also owns the teardown and *reports* it in that `Ok` payload. This
+/// function consumes the payload by branching on it (never `let _`) and reports the
+/// two unclean arms on stderr, but keeps the exit code the drift verdict. Its rustdoc
+/// states what the reap does and does not cover (grandchildren, uninterruptible `D`
+/// state, and the drift and probe-failure arms, which return from inside
+/// `spawn_and_validate` reporting no `Teardown` at all).
 async fn cmd_validate(
     config: Option<PathBuf>,
     upstream: Vec<String>,
@@ -754,12 +1041,35 @@ async fn cmd_validate(
     // its ungatedness is [`warn_if_ungated`]'s semantic claim, reported separately
     // on stderr.
     let ungated = resolved.policy == Default::default();
-    // `spawn_and_validate` spawns the child, probes `tools/list`, and validates.
-    // A drifted policy returns `ProxyError::Drift`; on success the returned
-    // server is dropped here, which tears the child down (`kill_on_drop`).
-    match lagom_proxy::spawn_and_validate(resolved).await {
-        Ok(_server) => {
+    // `validate_only` spawns the child, probes `tools/list`, validates, and tears the
+    // child down itself before returning; a drifted policy returns
+    // `ProxyError::Drift`. Nothing runnable comes back, so there is no `Server` to
+    // remember to discard here.
+    match lagom_proxy::validate_only(resolved).await {
+        Ok(teardown) => {
             println!("{}", validate_report(ungated));
+            // Teardown is a DIFFERENT fact from the drift verdict (`validate_only`'s
+            // "two independent outcomes, two channels"), so it lands on stderr and
+            // does not move the exit code: this command answers "does the policy
+            // still match the upstream", and exiting non-zero for a child that
+            // refused to die would report a policy problem validation did not find.
+            // stderr, not stdout — stdout is the JSON-RPC channel. `Exited` is the
+            // clean arm and says nothing; `reap` already logged each unclean arm's
+            // *cause*, these name the caller-visible consequence. Residual, stated
+            // rather than implied: a caller reading only the exit status or only
+            // stdout sees "validated" while an `Unreaped` pid may still be running —
+            // stderr is the only place that distinction surfaces here.
+            match teardown {
+                lagom_proxy::Teardown::Exited => {}
+                lagom_proxy::Teardown::Killed => eprintln!(
+                    "lagom: validated, but the upstream ignored MCP's stdin-close \
+                     shutdown and had to be SIGKILLed"
+                ),
+                lagom_proxy::Teardown::Unreaped(source) => eprintln!(
+                    "lagom: validated, but the upstream child was NOT reaped \
+                     ({source}); its pid may still be running or zombied"
+                ),
+            }
             Ok(ExitCode::SUCCESS)
         }
         Err(lagom_proxy::ProxyError::Drift(messages)) => {
@@ -1062,23 +1372,83 @@ mod tests {
     #[test]
     fn every_serving_surface_goes_through_one_call_site() {
         // `refire` shipped without the ungated diagnostic because it grew its own
-        // copy of the "serve or serve_audited" tail. This tripwire pins the single
-        // call site (`warn_then_serve`), so a third surface — or a re-inlined
-        // second one — fails here instead of silently serving undiagnosed.
+        // copy of the "serve or serve_audited" tail. This tripwire pins how many
+        // times each proxy entrypoint is named in this file, so a third surface —
+        // or a re-inlined second one — fails here instead of silently serving
+        // undiagnosed. The two composed spawn+run wrappers are pinned at 0, so a new
+        // caller taking that shorthand — the one `refire` skipped the diagnostic
+        // with — turns this red.
         //
-        // Textual on purpose: the needles are assembled at runtime so this test's
-        // own source does not match them. Residual: it counts source text, so an
-        // aliasing `use lagom_proxy::serve as x` or a renamed re-export would evade
-        // it. It is a drift tripwire, not a proof of exclusivity.
+        // What this is NOT: it is a COUNT, so it does not pin *which* function
+        // holds the call, and a count of 1 survives a call moving between call
+        // sites. Textual on purpose: the needles are assembled at runtime so this
+        // test's own source does not match them. Residual: it counts source text,
+        // so an aliasing `use lagom_proxy::serve as x` or a renamed re-export would
+        // evade it. It is a drift tripwire, not a proof of exclusivity.
         let src = include_str!("app.rs");
-        for name in ["serve", "serve_audited"] {
+        // Every mismatch is collected so a red run reports all four counts at once
+        // rather than stopping at the first.
+        let mut wrong = Vec::new();
+        for (name, want) in [
+            ("serve", 0usize),
+            ("serve_audited", 0),
+            ("spawn_and_validate", 1),
+            ("validate_only", 1),
+        ] {
             let needle = format!("lagom_proxy::{name}(");
-            assert_eq!(
-                src.matches(&needle).count(),
-                1,
-                "`{needle}` must be called from exactly one place (warn_then_serve)"
-            );
+            let got = src.matches(&needle).count();
+            if got != want {
+                wrong.push(format!("`{needle}` expected {want}, found {got}"));
+            }
         }
+        assert!(
+            wrong.is_empty(),
+            "proxy call-site counts drifted: {}",
+            wrong.join("; ")
+        );
+    }
+
+    #[test]
+    fn preflight_reply_is_confined_to_the_pre_bridge_arm() {
+        // LGM-6's stdout reply is legitimate only while nothing else owns stdout.
+        // This pins the shape that makes that true in the source as written: ONE
+        // reply call site (the `Err` arm of `bridge_or_correlate`), ONE bridge call
+        // site (its `Ok` arm), and exactly TWO composed serving arms in `Cli::run`.
+        // A reply added after a bridge failure, or a third composed surface, turns
+        // this red.
+        //
+        // What this is NOT: a COUNT, not a location and not a reachability proof —
+        // it cannot see that the one reply call site sits on the `Err` arm, only
+        // that there is one of it. Textual, so the needles are assembled at runtime
+        // to keep this test's own source from matching them; an alias, or a helper
+        // wrapping either call, would evade it. Drift tripwire, not exclusivity.
+        let src = include_str!("app.rs");
+        let mut wrong = Vec::new();
+        for (needle, want, what) in [
+            (
+                format!("{}_preflight_error(", "reply"),
+                2usize,
+                "definition + one call site",
+            ),
+            (
+                format!("bridge_{}(", "or_correlate"),
+                3,
+                "definition + the two Cli::run serving arms",
+            ),
+            // The `log`-argument form, because the bare `server.run(` also occurs
+            // in prose quoting `bridge.rs`'s own tail.
+            (format!("server.{}(log", "run"), 1, "the single bridge step"),
+        ] {
+            let got = src.matches(&needle).count();
+            if got != want {
+                wrong.push(format!("`{needle}` expected {want} ({what}), found {got}"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "pre-flight reply/bridge call sites drifted: {}",
+            wrong.join("; ")
+        );
     }
 
     #[test]
