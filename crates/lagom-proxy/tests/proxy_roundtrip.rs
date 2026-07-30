@@ -1,6 +1,9 @@
-//! Integration tests that drive real `tools/list` + `tools/call` round-trips
-//! through the proxy against the in-repo fake upstream fixture
-//! (`src/bin/fake_upstream.rs`), asserting the `SPEC.md` guarantees end-to-end:
+//! Integration tests against `lagom-proxy`'s public surface, asserting the
+//! `SPEC.md` guarantees end-to-end. Most drive real `tools/list` + `tools/call`
+//! round-trips through the proxy against the in-repo fake upstream fixture
+//! (`src/bin/fake_upstream.rs`); the `validate_only` tests bridge no traffic at
+//! all, and two of them use an `sh` stub that answers the drift probe and then
+//! ignores stdin EOF:
 //!
 //! - dropped tools are absent from the projected `tools/list` (§4.1);
 //! - a pinned arg is removed from the projected schema and injected on the
@@ -9,6 +12,8 @@
 //!   rejected with an annotation and never forwarded upstream (§9.1);
 //! - untouched traffic passes through unchanged (passthrough, `CONTEXT.md`);
 //! - startup drift fails loud (§5.3);
+//! - `validate_only` returns the drift verdict, reaps the child, and reports the
+//!   teardown outcome to its caller (§5.3, §10);
 //! - refire reproduces a byte-identical resolved policy (§8.2, §5.4).
 
 use std::collections::BTreeMap;
@@ -16,7 +21,7 @@ use std::collections::BTreeMap;
 use lagom_audit::{AuditEvent, AuditLog};
 use lagom_core::{ArgPolicy, Constraint, Policy, Presence, ToolPolicy};
 use lagom_proxy::{
-    MintRecord, PolicySources, ProxyError, ResolvedPolicy, UpstreamCommand, mint, refire,
+    MintRecord, PolicySources, ProxyError, ResolvedPolicy, Teardown, UpstreamCommand, mint, refire,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
@@ -660,4 +665,217 @@ async fn refire_is_byte_identical() {
         "refire reproduces the recorded resolved policy byte-for-byte"
     );
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// The OS-reported process state for `pid`, or `None` when `ps` reports no such
+/// process.
+///
+/// Same approach as the unit-test helper of the same name in
+/// `src/bridge.rs`, and for the same two reasons: lagom-proxy has no `libc`
+/// dependency, and `libc::kill(pid, 0)` *succeeds* for a zombie, so it cannot
+/// distinguish "reaped" from "signalled but leaked" — `ps` reports `Z` for the
+/// leak. Residual, unchanged from that helper: pids are reusable, so `None` is
+/// conclusive in practice, not in principle.
+fn process_state(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "state=", "-p", &pid.to_string()])
+        .output()
+        .expect("`ps` must be available to check for a leaked child");
+    if !out.status.success() {
+        return None;
+    }
+    let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!state.is_empty()).then_some(state)
+}
+
+/// An upstream that records its own pid, answers lagom's drift probe with a
+/// single `search` tool, then `exec sleep`s — stdin EOF moves it not at all, so
+/// only [`lagom_proxy::validate_only`]'s `SIGKILL` escalation can end it.
+///
+/// The pid is written to `pid_path` **before** the first probe response, so by
+/// the time `validate_only` returns the file is present by shell sequencing (no
+/// polling, no sleep). `exec` keeps the pid: the recorded value is the direct
+/// child pid lagom itself spawned, which is precisely the pid `reap` covers.
+fn pid_recording_stuck_upstream(pid_path: &std::path::Path) -> UpstreamCommand {
+    let init = concat!(
+        r#"{"jsonrpc":"2.0","id":"lagom-init-probe","result":{"protocolVersion":"2025-11-25","#,
+        r#""capabilities":{},"serverInfo":{"name":"pid-stub","version":"0"}}}"#
+    );
+    let list = concat!(
+        r#"{"jsonrpc":"2.0","id":"lagom-drift-probe","result":{"tools":"#,
+        r#"[{"name":"search","inputSchema":{"type":"object"}}]}}"#
+    );
+    UpstreamCommand {
+        command: "sh".into(),
+        args: vec![
+            "-c".into(),
+            format!(
+                "echo $$ > '{pid}'; read _l; printf '%s\\n' '{init}'; read _l; read _l; \
+                 printf '%s\\n' '{list}'; exec sleep 300",
+                pid = pid_path.display()
+            ),
+        ],
+        env: vec![],
+    }
+}
+
+/// A collision-resistant temp path for a stub to write to, tagged with `tag`.
+///
+/// Per-pid + nanosecond-stamped so two tests (or two `cargo test` runs) cannot
+/// share one. Residual: nothing locks the file to this process, so a caller must
+/// still delete it.
+fn unique_temp_path(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "lagom-{tag}-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+#[tokio::test]
+async fn validate_only_accepts_a_matching_upstream() {
+    let resolved = ResolvedPolicy {
+        policy: projection_policy(),
+        upstream: fixture_command(false),
+    };
+    // The drift verdict is this test's subject; the teardown payload is discarded
+    // on purpose and asserted by
+    // `validate_only_distinguishes_a_clean_exit_from_a_kill` instead.
+    let _ = lagom_proxy::validate_only(resolved)
+        .await
+        .expect("every policy reference resolves against the fixture surface");
+}
+
+#[tokio::test]
+async fn validate_only_reports_drift_instead_of_succeeding() {
+    // Same drifted fixture as `drift_fails_loud_and_refuses_to_serve`: `artifact`
+    // is renamed to `vault` upstream while the policy still pins `artifact`.
+    let resolved = ResolvedPolicy {
+        policy: projection_policy(),
+        upstream: fixture_command(true),
+    };
+    let err = lagom_proxy::validate_only(resolved)
+        .await
+        .expect_err("a stale policy reference must fail validation");
+    match err {
+        ProxyError::Drift(msgs) => assert!(
+            msgs.iter().any(|m| m.contains("artifact")),
+            "drift names the vanished arg: {msgs:?}"
+        ),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn validate_only_reaps_an_upstream_that_ignores_stdin_eof() {
+    let pid_path = unique_temp_path("validate-only-pid");
+
+    let resolved = ResolvedPolicy {
+        policy: Policy::passthrough(),
+        upstream: pid_recording_stuck_upstream(&pid_path),
+    };
+    // The 30s bound is a failure detector, not a synchroniser: it only stops a
+    // wedged run from hanging the suite.
+    let started = std::time::Instant::now();
+    // The teardown payload is discarded here — this test's subject is that the pid
+    // is gone and that the wait was synchronous. What the payload *says* is
+    // asserted by `validate_only_distinguishes_a_clean_exit_from_a_kill`.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        lagom_proxy::validate_only(resolved),
+    )
+    .await
+    .expect("validate_only must not hang on an upstream that ignores stdin EOF")
+    .expect("the stub answers the probe with a surface passthrough accepts");
+    let elapsed = started.elapsed();
+
+    // Why a wall-clock LOWER bound rather than only the liveness check below: an
+    // executed falsification showed the liveness check alone does NOT
+    // discriminate. Replacing `reap(child).await` with a plain drop still left
+    // `ps` reporting nothing, because `kill_on_drop` SIGKILLs at drop and tokio's
+    // deferred reaping won the race — the 3 tests passed in 0.21s. Elapsed time
+    // does discriminate: `reap` waits `CHILD_EXIT_GRACE` (2s, `src/bridge.rs`) for
+    // a self-exit *before* escalating, and this stub `exec sleep 300`s, so it
+    // cannot self-exit inside the test's life; the drop-only variant returned in
+    // ~0.2s. 1s is a deliberately slack floor: it clears the drop-only path by 5x
+    // while tolerating coarse timers. Residuals, since nothing pins them:
+    // shortening `CHILD_EXIT_GRACE` below 1s would fail this assertion and should
+    // be reviewed here rather than re-slackened, and this proves a synchronous
+    // wait happened, not which syscall performed it.
+    assert!(
+        elapsed >= std::time::Duration::from_secs(1),
+        "validate_only returned in {elapsed:?}, too fast to have waited out \
+         CHILD_EXIT_GRACE on a child that cannot self-exit: teardown was deferred \
+         to `kill_on_drop` instead of reaped synchronously"
+    );
+
+    let pid: u32 = std::fs::read_to_string(&pid_path)
+        .expect("the stub records its pid before answering the probe")
+        .trim()
+        .parse()
+        .expect("the stub writes a bare pid");
+    // Cleanup before the assertion so a failure still removes the temp file; the
+    // result is ignored because a leftover temp file is not what this test is
+    // about, and the read above already proved the path existed.
+    let _ = std::fs::remove_file(&pid_path);
+
+    assert_eq!(
+        process_state(pid),
+        None,
+        "ORPHANED CHILD: validate_only returned Ok with the upstream still \
+         around (state `Z` = killed but never reaped, anything else = running)"
+    );
+}
+
+/// The teardown-observability lock cited by `validate_only`'s rustdoc: a caller
+/// that gets `Ok` can tell a child that shut down cleanly from one that had to be
+/// `SIGKILL`ed.
+///
+/// Both halves are required. Asserting only [`Teardown::Killed`] would pass
+/// against a `reap` that returned `Killed` unconditionally, and asserting only
+/// [`Teardown::Exited`] against one that returned `Exited` unconditionally — the
+/// exact pre-change situation, where every teardown looked identical (`Ok(())`)
+/// and the escalation was visible on stderr only. The pair is what discriminates.
+///
+/// NOT asserted here, stated rather than implied: [`Teardown::Unreaped`] has no
+/// coverage — provoking a `kill`/`wait` failure needs a pid lagom is not allowed
+/// to signal, which this suite cannot arrange portably.
+#[tokio::test]
+async fn validate_only_distinguishes_a_clean_exit_from_a_kill() {
+    // `fake_upstream` reads stdin lines to EOF and then returns from `main`
+    // (`src/bin/fake_upstream.rs`), so it self-exits well inside CHILD_EXIT_GRACE.
+    let clean = lagom_proxy::validate_only(ResolvedPolicy {
+        policy: projection_policy(),
+        upstream: fixture_command(false),
+    })
+    .await
+    .expect("the fixture surface satisfies every policy reference");
+    assert!(
+        matches!(clean, Teardown::Exited),
+        "an upstream that exits on stdin EOF must be reported as Exited, got {clean:?}"
+    );
+
+    // Same call, an upstream that `exec sleep`s past EOF: only the SIGKILL
+    // escalation can end it, and the caller must be told that happened.
+    let pid_path = unique_temp_path("validate-only-teardown-pid");
+    let escalated = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        lagom_proxy::validate_only(ResolvedPolicy {
+            policy: Policy::passthrough(),
+            upstream: pid_recording_stuck_upstream(&pid_path),
+        }),
+    )
+    .await
+    .expect("validate_only must not hang on an upstream that ignores stdin EOF")
+    .expect("the stub answers the probe with a surface passthrough accepts");
+    // Not what this test asserts; removed so a failure below still cleans up.
+    let _ = std::fs::remove_file(&pid_path);
+    assert!(
+        matches!(escalated, Teardown::Killed),
+        "an upstream that ignores stdin EOF must be reported as Killed, not \
+         silently absorbed into a bare Ok: got {escalated:?}"
+    );
 }

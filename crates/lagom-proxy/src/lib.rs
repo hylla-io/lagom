@@ -25,7 +25,7 @@ use thiserror::Error;
 mod bridge;
 pub mod skills;
 
-pub use bridge::{Server, serve, serve_audited, spawn_and_validate};
+pub use bridge::{Server, Teardown, serve, serve_audited, spawn_and_validate, validate_only};
 pub use skills::SHIPPED_SKILLS;
 
 // The mint-record data types and the pure `refire` are owned by `lagom-core`

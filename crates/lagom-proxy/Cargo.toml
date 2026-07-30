@@ -15,3 +15,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+
+# `test-util` is NOT in tokio's `full` feature set, so without it the
+# probe-timeout test burns its real 10s budget on the wall clock (see
+# `a_silent_upstream_fails_the_probe_loudly_instead_of_hanging`, which needs
+# `start_paused`). Kept dev-only because a pausable clock in a shipped binary
+# would be a correctness hazard; what enforces that is cargo's dev-dependency
+# resolution under the workspace's `resolver = "3"` (root `Cargo.toml`), which
+# does not feed dev-dep features into non-dev builds. Locally checkable:
+#   cargo tree -p lagom-proxy -e normal -f "{p} {f}"  # tokio WITHOUT test-util
+#   cargo tree -p lagom-proxy -e dev    -f "{p} {f}"  # tokio WITH test-util
+# Scope of that lock: it covers cargo-driven builds of this workspace only. It
+# says nothing about a downstream consumer that enables `tokio/test-util` itself,
+# nor about any non-cargo packaging path.
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

@@ -165,9 +165,11 @@ const PROBE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// lagom escalates to `SIGKILL` ([`reap`]).
 ///
 /// MCP's stdio shutdown sequence is: close the child's stdin, wait for it to
-/// exit, then signal (MCP spec, `2025-11-25` transports). [`pump_downstream`]
-/// already closes stdin on its way out, so this is that "wait" step — bounded,
-/// because an upstream is free to ignore EOF and one demonstrably does.
+/// exit, then signal (MCP spec, `2025-11-25` transports). Stdin is already closed
+/// by the time [`reap`] waits — [`pump_downstream`] closes it on its way out on
+/// the serve path, [`validate_only`] drops it explicitly on the validate path —
+/// so this is that "wait" step, bounded because an upstream is free to ignore EOF
+/// and one demonstrably does.
 ///
 /// 2s: teardown is interactive and the harness is already gone, so latency here
 /// is user-visible, yet a cooperative server that flushes state on EOF gets far
@@ -316,20 +318,23 @@ fn carries_tool_surface(msg: &Value) -> bool {
 /// A live proxy instance: a spawned upstream child plus the resolved policy used
 /// to project its surface.
 ///
-/// Teardown (`SPEC.md` §10) is [`Server::run_with`]'s job, via [`reap`], because
+/// Teardown (`SPEC.md` §10) runs through [`reap`], from [`Server::run_with`] on
+/// the serve path and from [`validate_only`] on the validate path, because
 /// dropping the [`Child`] is weaker than it looks: `kill_on_drop` *signals* and
 /// then leaves reaping to tokio's process driver on a documented best-effort
 /// basis (tokio 1.52.3 `Command::kill_on_drop` caveats), which races the runtime
-/// shutdown right behind it. Drop remains the backstop for the paths that never
-/// reach `run_with` — a `Server` the caller drops unrun, or a panic — and for
-/// those the best-effort caveat still applies.
+/// shutdown right behind it. Drop remains the backstop only where neither of
+/// those runs — a `Server` the caller drops unrun, or a panic — and for those the
+/// best-effort caveat still applies.
 ///
 /// The child's stdio is taken at spawn-and-validate time: the upstream writer
 /// (`up_stdin`) and the **already-buffered** upstream reader (`up_reader`) are
 /// held here so the same reader used for the
-/// `initialize` + `tools/list` drift probe is threaded straight into the pump —
-/// no throwaway [`BufReader`] is created over the child's stdout twice, so bytes
-/// the probe buffered past its response newline are never dropped.
+/// `initialize` + `tools/list` drift probe is threaded straight into the pump when
+/// the session runs — no throwaway [`BufReader`] is created over the child's
+/// stdout twice, so on the serve path bytes the probe buffered past its response
+/// newline are not dropped. [`validate_only`] discards that read-ahead instead: it
+/// bridges no traffic, so it drops the reader with the destructuring.
 #[derive(Debug)]
 pub struct Server {
     resolved: ResolvedPolicy,
@@ -455,7 +460,16 @@ impl Server {
 
         // Always before returning, on every arm above: the child is the resource
         // an early return would leak.
-        reap(child).await;
+        //
+        // Why the outcome is dropped HERE rather than returned: this function's
+        // `Err` channel is reserved for a pump panic (below), and folding a
+        // teardown failure into it would report a session that ended cleanly as a
+        // bridge failure. `reap` still logs a failed teardown to stderr, so it is
+        // not silent. Stated rather than implied — this is a scoped limitation, not
+        // a claim of cleanliness: on the SERVE path a teardown failure is
+        // observable only on stderr; `run_with`'s caller cannot branch on it.
+        // [`validate_only`] is the path that returns it.
+        let _: Teardown = reap(child).await;
 
         // A pump task can only fail by panicking (both return `()`), and that is
         // a lagom bug — returning `Ok` would report it as a clean session end.
@@ -471,12 +485,39 @@ impl Server {
     }
 }
 
+/// How a `reap` ended: the programmatic half of teardown reporting.
+///
+/// Exists because stderr was the *only* teardown channel, which left a caller
+/// unable to tell "validated and cleaned up" from "validated but leaked a
+/// process" (`SPEC.md` §10 wants teardown loud). Returned by [`validate_only`];
+/// deliberately NOT returned by [`Server::run_with`] (see its `reap` call site).
+#[derive(Debug)]
+#[must_use = "a dropped teardown outcome hides a leaked or SIGKILLed upstream child"]
+pub enum Teardown {
+    /// The child exited on its own within `CHILD_EXIT_GRACE` (2s) of stdin close
+    /// and `wait()` returned its status. The clean path.
+    Exited,
+    /// The child did not exit on its own — either `CHILD_EXIT_GRACE` elapsed or
+    /// the grace `wait()` itself errored — and the `SIGKILL` + `wait` escalation
+    /// then reaped it. Which of those two triggered it is on stderr only; the
+    /// caller-visible fact is that the upstream ignored MCP's shutdown signal.
+    Killed,
+    /// `SIGKILL` + `wait` FAILED: the pid was not reaped, so it may still be
+    /// running or sitting as a zombie. Carries the `kill`/`wait` error.
+    Unreaped(std::io::Error),
+}
+
 /// Terminate **and reap** the upstream child: bounded wait for a self-exit after
 /// stdin close, then `SIGKILL`.
 ///
-/// What this guarantees, narrowly: on return, `wait()` has succeeded for the
-/// direct child pid unless the `eprintln!` below fired, so lagom cannot exit
-/// leaving that pid running or zombied.
+/// What the return value reports: [`Teardown::Exited`] and [`Teardown::Killed`]
+/// both mean `wait()` returned for the direct child pid (the `Killed` case is
+/// checked by `validate_only_distinguishes_a_clean_exit_from_a_kill` +
+/// `validate_only_reaps_an_upstream_that_ignores_stdin_eof`, which asserts `ps`
+/// reports no such pid); [`Teardown::Unreaped`] means the pid may still be running
+/// or zombied. The two escalation branches and the failure branch also log to
+/// stderr, because the serve path's caller does not receive the value; the clean
+/// self-exit logs nothing.
 ///
 /// What it does **not** cover, enumerated rather than implied:
 ///
@@ -484,17 +525,22 @@ impl Server {
 ///   so processes the upstream itself spawned (a wrapper script's own children)
 ///   survive and reparent. Killing the group would need a process-group session
 ///   lagom does not set up.
-/// - **Uninterruptible waits.** A child wedged in kernel `D` state cannot be
-///   killed by any signal; `Child::kill` awaits it, so teardown blocks with it.
-/// - **`Server`s that never reach [`Server::run_with`]** — see the [`Server`]
-///   docs; those still rely on `kill_on_drop`'s best-effort reaping.
-async fn reap(mut child: Child) {
-    // `pump_downstream` closed the child's stdin on its way out, which is MCP's
-    // stdio shutdown signal, so this is the spec's "wait for it to exit" step.
-    // `Child::wait` is documented cancel-safe (tokio 1.52.3), so losing this race
-    // to the timer cannot lose the exit status for the `kill` below.
+/// - **Uninterruptible waits.** A child wedged in kernel `D` (uninterruptible
+///   sleep) state does not act on a pending `SIGKILL` until that sleep completes;
+///   `Child::kill` awaits it, so teardown blocks with it.
+/// - **`Server`s that are never torn down.** A [`Server`] that reaches neither
+///   [`Server::run_with`] nor [`validate_only`] — dropped unrun, or lost to a
+///   panic — is not reaped here at all and falls back to `kill_on_drop`'s
+///   best-effort reaping (see the [`Server`] docs).
+async fn reap(mut child: Child) -> Teardown {
+    // Both of this function's call sites close the child's stdin first —
+    // `pump_downstream` on its way out (serve), `validate_only` by dropping it
+    // (validate) — and that close is MCP's stdio shutdown signal, so this is the
+    // spec's "wait for it to exit" step. `Child::wait` is documented cancel-safe
+    // (tokio 1.52.3), so losing this race to the timer cannot lose the exit status
+    // for the `kill` below.
     match tokio::time::timeout(CHILD_EXIT_GRACE, child.wait()).await {
-        Ok(Ok(_status)) => return,
+        Ok(Ok(_status)) => return Teardown::Exited,
         Ok(Err(e)) => {
             eprintln!("lagom: waiting for the upstream child failed: {e}; sending SIGKILL");
         }
@@ -508,10 +554,15 @@ async fn reap(mut child: Child) {
     // `kill` = `start_kill` + `wait`, i.e. signal *and* reap; `start_kill` is
     // `Ok` on an already-exited child (tokio 1.52.3), so the grace-path race is
     // not an error.
-    if let Err(e) = child.kill().await {
-        // Loud, never swallowed: this is exactly the "orphaned child" outcome
-        // this function exists to prevent, so it must not be silent.
-        eprintln!("lagom: could not kill and reap the upstream child: {e}");
+    match child.kill().await {
+        Ok(()) => Teardown::Killed,
+        Err(e) => {
+            // Loud on stderr AND returned: this is exactly the "orphaned child"
+            // outcome this function exists to prevent, so it must reach both a
+            // watching operator and a caller that can branch on it.
+            eprintln!("lagom: could not kill and reap the upstream child: {e}");
+            Teardown::Unreaped(e)
+        }
     }
 }
 
@@ -955,6 +1006,89 @@ pub async fn spawn_and_validate(resolved: ResolvedPolicy) -> Result<Server, Prox
         up_reader,
         upstream_defs,
     })
+}
+
+/// Validate a resolved policy against the live upstream, tear the child down, and
+/// report how the teardown went (`SPEC.md` §5.3 drift safety; §10 "teardown on
+/// exit, crashes loud").
+///
+/// [`spawn_and_validate`] plus the teardown, for callers that want the drift
+/// verdict and nothing runnable. Its intended consumer is the `lagom validate`
+/// CLI arm, which is migrated onto it by a separate unit — so this doc describes
+/// the contract only and deliberately makes no claim about how any caller uses it.
+///
+/// **Two independent outcomes, two channels.** The `Result` carries the *drift
+/// verdict*; the `Ok` payload carries the *teardown outcome*. Split because they
+/// are independent facts — a policy can match the live surface while the child
+/// refuses to die — and because encoding a teardown failure as a [`ProxyError`]
+/// would make a caller report a policy problem that validation did not find:
+///
+/// - `Err(_)` — validation did not pass, or the child could not be spawned or
+///   probed (arms inside [`spawn_and_validate`]).
+/// - `Ok(`[`Teardown::Exited`]`)` — validated; child exited on its own.
+/// - `Ok(`[`Teardown::Killed`]`)` — validated; child ignored MCP's shutdown
+///   signal and had to be `SIGKILL`ed.
+/// - `Ok(`[`Teardown::Unreaped`]`)` — validated, but the child was NOT reaped and
+///   may still be running or zombied.
+///
+/// So `Ok` alone does **not** mean "cleaned up"; the payload is the cleanup fact.
+/// [`Teardown`]'s `#[must_use]` makes rustc's `unused_must_use` fire when that
+/// payload is dropped in statement position, which `just ci` escalates to a gate
+/// failure (`justfile:21`, `clippy … -D warnings`). Scoped: that is all
+/// `#[must_use]` checks — an explicit `let _ =` still discards it silently, so this
+/// is not a proof that no caller ignores teardown.
+///
+/// **What the type enforces** — lock class: the type system, cited inline. The
+/// success type is [`Teardown`], never [`Server`], so this path hands the caller
+/// nothing runnable and no later `Server::run` can serve traffic off a handle this
+/// function produced; that is the return signature, not a convention. Field
+/// privacy is a NARROWER claim than an earlier revision of this doc made: every
+/// [`Server`] field is private to this module (declaration above, no `pub`), which
+/// blocks *synthesising* a `Server` from parts outside `bridge` — it does not make
+/// `Server` unobtainable out there, because [`spawn_and_validate`] is `pub` (and
+/// re-exported in `lib.rs`) and returns one.
+///
+/// **What the teardown does, stated as what is checked.** The child's stdin is
+/// dropped here and its stdout with the destructuring (MCP's stdio shutdown
+/// signal, `2025-11-25` transports), then [`reap`] runs to completion before this
+/// returns, so the outcome is settled — not deferred to `kill_on_drop` — by the
+/// time the caller sees it. Two locks, both in `tests/proxy_roundtrip.rs`:
+/// `validate_only_reaps_an_upstream_that_ignores_stdin_eof` asserts `ps` reports
+/// no such pid AND — the part that actually discriminates — that the call took at
+/// least 1s, i.e. it waited out [`CHILD_EXIT_GRACE`] synchronously; recorded
+/// because it was measured, the liveness assertion **alone** passes even with the
+/// [`reap`] call deleted, since `kill_on_drop` signals at drop and tokio's
+/// deferred reaping won that race. `validate_only_distinguishes_a_clean_exit_from_a_kill`
+/// locks the reporting itself: the same call yields [`Teardown::Exited`] for a
+/// fixture that exits on EOF and [`Teardown::Killed`] for a stub that ignores it.
+///
+/// **NOT covered**, enumerated rather than implied — [`reap`]'s own residuals:
+/// **grandchildren** (`SIGKILL` targets the child pid, not a process group, so
+/// processes a wrapper-script upstream spawned survive and reparent) and
+/// **uninterruptible waits** (a child in kernel `D` state does not act on a pending
+/// `SIGKILL` until that sleep completes, and teardown blocks with it). Also not
+/// covered: the drift and probe-failure arms return from inside
+/// [`spawn_and_validate`], which kills there with `let _ = child.kill()` — those
+/// arms report no [`Teardown`] at all, and no test in this crate asserts the pid is
+/// gone on them (the two that do check a pid, via `ps`, are
+/// `downstream_eof_ends_the_session_and_reaps_a_stuck_upstream` and
+/// `validate_only_reaps_an_upstream_that_ignores_stdin_eof`, both success arms).
+///
+/// Validation is the serve path's own: [`serve_audited`] calls the same
+/// [`spawn_and_validate`], so the probe and [`validate`] step are shared code
+/// rather than a re-implementation. Scope of that: it makes the verdict about the
+/// surface observed at probe time; the upstream may drift immediately after.
+pub async fn validate_only(resolved: ResolvedPolicy) -> Result<Teardown, ProxyError> {
+    let Server {
+        child, up_stdin, ..
+    } = spawn_and_validate(resolved).await?;
+    // Close the upstream's stdin explicitly: `reap` opens with a bounded wait for
+    // a *self*-exit, and that wait is only meaningful once the child has seen EOF.
+    // On the serve path `pump_downstream` does this on its way out; there is no
+    // pump here. `up_reader` (the child's stdout) is left unbound by the `..`, so
+    // it drops when that `let` statement completes.
+    drop(up_stdin);
+    Ok(reap(child).await)
 }
 
 /// Spawn the upstream MCP server child with piped stdio.
@@ -1676,17 +1810,40 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_silent_upstream_fails_the_probe_loudly_instead_of_hanging() {
-        // Deterministic without timing luck: `sleep` cannot write and does not
-        // exit, so the probe read has exactly ONE reachable outcome whatever the
-        // scheduler does — there is no race to lose. Pre-fix `read_probe_response`
-        // had no bound at all, and this test hung forever instead of failing.
+        // Paused clock, so `PROBE_RESPONSE_TIMEOUT` fires at ~0s of wall time
+        // instead of burning its full 10s budget: tokio auto-advances a paused
+        // clock to the next pending timer whenever the runtime has no runnable
+        // work, explicitly including while a task waits on I/O (tokio 1.52.3
+        // `tokio::time::pause` docs, `src/time/clock.rs` §Auto-advance /
+        // §Preventing auto-advance).
         //
-        // Cost, stated because it is real: this burns a full
-        // `PROBE_RESPONSE_TIMEOUT` (10s) of wall clock. Collapsing it needs
-        // `tokio/test-util`'s `start_paused` clock (whose auto-advance skips an
-        // idle timer), and that dev-feature is not enabled for this crate.
+        // Why firing early is safe *here*, and only here:
+        //   1. The stub is `sleep 300` (`silent_upstream`): POSIX `sleep` writes
+        //      nothing to stdout and returns only after its operand elapses, so
+        //      within this test's lifetime the probe read observes neither a
+        //      response line nor EOF, leaving the bounded read in
+        //      `read_probe_response` one reachable outcome — `TimedOut`.
+        //      Residual, since nothing mechanical pins it: that rests on
+        //      `sleep(1)` behaviour, so swapping the stub for one that writes or
+        //      exits would silently widen the reachable set and reintroduce a
+        //      clock-ordering race.
+        //   2. The checks below, enumerated: the `Err` variant, `source.kind()`,
+        //      and a `contains` on the message rendered from
+        //      `PROBE_RESPONSE_TIMEOUT.as_secs()`. All three are
+        //      clock-independent, so a virtual 10s satisfies them as a real one
+        //      did. Residual: nothing stops a later assertion on measured
+        //      elapsed time being added here — that would require dropping the
+        //      pause, not adjusting the bound.
+        // Pre-fix `read_probe_response` had no bound at all, and this test hung
+        // forever instead of failing.
+        //
+        // Deliberately NOT applied to
+        // `downstream_eof_ends_the_session_and_reaps_a_stuck_upstream`: that
+        // stub answers the probe on real time, so any idle instant while `sh`
+        // is scheduled would auto-advance past this same 10s timer and fail the
+        // probe that test needs to succeed. It stays real-clock.
 
         let err = spawn_and_validate(ResolvedPolicy {
             policy: Policy::passthrough(),
