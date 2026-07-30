@@ -18,7 +18,7 @@ exclude = ["crates/lagom-py", "crates/lagom-wasm", "crates/lagom-node"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/hylla-io/lagom"
@@ -27,10 +27,10 @@ rust-version = "1.96"
 [workspace.dependencies]
 # Path deps carry an explicit version so every crate in the chain is
 # publishable to crates.io (cargo strips the path and keeps the version).
-lagom-core = { path = "crates/lagom-core", version = "0.1.0" }
-lagom-config = { path = "crates/lagom-config", version = "0.1.0" }
-lagom-audit = { path = "crates/lagom-audit", version = "0.1.0" }
-lagom-proxy = { path = "crates/lagom-proxy", version = "0.1.0" }
+lagom-core = { path = "crates/lagom-core", version = "0.1.1" }
+lagom-config = { path = "crates/lagom-config", version = "0.1.1" }
+lagom-audit = { path = "crates/lagom-audit", version = "0.1.1" }
+lagom-proxy = { path = "crates/lagom-proxy", version = "0.1.1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"

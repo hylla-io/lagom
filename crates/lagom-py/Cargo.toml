@@ -5,7 +5,7 @@ description = "Python binding (PyO3/maturin) exposing lagom's project/rewrite co
 # cdylib needs a Python interpreter to link, which would break `cargo build
 # --all`. Built via `just py` (maturin) instead. Because it is excluded it
 # cannot inherit `[workspace.package]`, so these are set explicitly.
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/hylla-io/lagom"

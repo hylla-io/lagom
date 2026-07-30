@@ -1,6 +1,6 @@
 {
   "name": "@hylla-io/lagom",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Node.js/TypeScript binding for lagom — narrow an upstream MCP server into a sealed, slimmed projection (project/rewrite/merge/validate). Accepts the raw upstream tools/list (camelCase inputSchema or snake_case input_schema; missing/null schema normalizes to {}); projects canonical snake_case input_schema.",
   "license": "MIT",
   "repository": {
@@ -28,11 +28,11 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@hylla-io/lagom-darwin-x64": "0.1.0",
-    "@hylla-io/lagom-darwin-arm64": "0.1.0",
-    "@hylla-io/lagom-linux-x64-gnu": "0.1.0",
-    "@hylla-io/lagom-linux-arm64-gnu": "0.1.0",
-    "@hylla-io/lagom-win32-x64-msvc": "0.1.0"
+    "@hylla-io/lagom-darwin-x64": "0.1.1",
+    "@hylla-io/lagom-darwin-arm64": "0.1.1",
+    "@hylla-io/lagom-linux-x64-gnu": "0.1.1",
+    "@hylla-io/lagom-linux-arm64-gnu": "0.1.1",
+    "@hylla-io/lagom-win32-x64-msvc": "0.1.1"
   },
   "scripts": {
     "build": "napi build --platform --release --manifest-path Cargo.toml",

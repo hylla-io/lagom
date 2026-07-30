@@ -172,7 +172,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "lagom-audit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lagom-core",
  "serde",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "lagom-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lagom-core",
  "serde",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "lagom-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "regex",
  "serde",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "lagom-node"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lagom-audit",
  "lagom-core",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "lagom-proxy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lagom-audit",
  "lagom-config",
