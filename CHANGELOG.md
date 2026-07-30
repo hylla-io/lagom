@@ -223,6 +223,21 @@ in `merge` (both below).
   `CARGO_HOME` and on the toolchain hash; `err` parity cases compare
   classification only.
 
+### Dependencies
+
+Eight Dependabot bumps that landed on `main` before this release and are
+included in it: `wazero` 1.9.0 → 1.12.0 (`/go`, the wasm runtime the Go face
+executes on), `mcp-go` (`/go/examples`), `napi` 3.9.2 → 3.10.2 and
+`napi-derive` 3.5.6 → 3.5.9 and `@napi-rs/cli` (`/crates/lagom-node`), and
+`toml` 0.8.23 → 1.1.2+spec-1.1.0 in the workspace plus `/crates/lagom-py` and
+`/crates/lagom-node`. All eight were authored 2026-07-07, so each satisfies the
+72-hour supply-chain cooldown in `CLAUDE.md` by a wide margin — the basis for
+that statement is the commit dates, not a per-crate publish-date lookup. The
+`toml` change crosses a major version; it is a config/manifest-parsing
+dependency and the full gate (`just ci`, `go-test`, `parity`, `node-test`) is
+green on the integrated tree. `crates/lagom-node/index.js` was regenerated
+under the bumped napi CLI so its binding-version checks match this release.
+
 ## [0.1.0] — 2026-07-06
 
 First release. One transport-less Rust core (`lagom-core`) behind four faces at
