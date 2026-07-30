@@ -3,6 +3,7 @@ package lagom_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	lagom "github.com/hylla-io/lagom/go"
@@ -131,6 +132,81 @@ func TestMergeRejectsWidening(t *testing.T) {
 
 	if _, err := lagom.Merge(ctx, []byte(base), []byte(overlay)); err == nil {
 		t.Fatal("re-adding a dropped tool is widening and must error, got nil")
+	}
+}
+
+// TestMergeAdmitsOverlayRename covers merge's rename arm for an UNBOUND base
+// name: the base set no rename for `search`, so the overlay may name it and that
+// name must reach the merged policy. This is the shape every binding mints
+// through — lagom-go/node/py pass no config paths, so the whole built policy
+// (rename included) folds as an overlay onto a passthrough base; sealing an
+// unbound name made PolicyBuilder.Rename unexpressible here (fixed in 88cb040).
+// Enforced: merge's output for this input. NOT covered: what the renamed surface
+// projects or how a call resolves (TestGuardSlimDefsAreBrandedAndNarrowed and
+// TestGuardGateInjectsPinAndRejectsDropped own that half), and collisions the
+// new name may create (validate's projected-name check, locked in-core by
+// merge.rs::overlay_rename_onto_another_kept_tools_name_is_caught_as_a_collision).
+// Core-side lock: merge.rs::overlay_may_name_a_tool_the_base_never_bound.
+func TestMergeAdmitsOverlayRename(t *testing.T) {
+	ctx := context.Background()
+	base := `{"default_presence":"keep","tools":{}}`
+	overlay := `{"tools":{"search":{"rename":"find"}}}`
+
+	out, err := lagom.Merge(ctx, []byte(base), []byte(overlay))
+	if err != nil {
+		t.Fatalf("an overlay rename over an unbound base name must merge: %v", err)
+	}
+	var merged struct {
+		Tools map[string]struct {
+			Rename *string `json:"rename"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(out, &merged); err != nil {
+		t.Fatalf("unmarshal merged policy: %v (raw: %s)", err, out)
+	}
+	if r := merged.Tools["search"].Rename; r == nil || *r != "find" {
+		t.Errorf("merged policy must carry the overlay rename `find`, got %v (raw: %s)", r, out)
+	}
+}
+
+// TestMergeRejectsRenameRedirect covers the other side of the same arm: a base
+// that already set `search` -> `find` is a SET bound, and an overlay pointing it
+// at `admin` is rejected. This is the test that proves the seal survived the
+// relaxation TestMergeAdmitsOverlayRename requires, rather than being deleted.
+//
+// Two deliberate assertion choices:
+//   - the identical-restatement control runs first, so a rejection below is
+//     attributable to the REDIRECT and not to any overlay rename on a sealed base;
+//   - the message must name both the sealed name and the redirect target. That
+//     substring set is what discriminates this arm from the pre-88cb040 blanket
+//     ban, whose message was the shorter "overlay may not rename tool `search`"
+//     (see `git show d373b47:crates/lagom-core/src/merge.rs`, lines 79-83). A bare
+//     is-err assertion cannot tell the two apart, so it also cannot tell a stale
+//     embedded wasm blob apart from a fresh one. Coupled to merge.rs's
+//     MergeError format string by design.
+//
+// Enforced: merge's ok/err verdict for these two inputs. NOT covered: an overlay
+// renaming a DIFFERENT tool onto `find` (a vocabulary hijack merge cannot see;
+// validate rejects it — merge.rs::overlay_rename_may_not_hijack_a_sealed_rename_target),
+// nor overlay silence (merge.rs::overlay_silence_cannot_erase_a_sealed_rename).
+func TestMergeRejectsRenameRedirect(t *testing.T) {
+	ctx := context.Background()
+	sealed := `{"default_presence":"keep","tools":{"search":{"presence":"keep","rename":"find"}}}`
+
+	restated := `{"tools":{"search":{"rename":"find"}}}`
+	if _, err := lagom.Merge(ctx, []byte(sealed), []byte(restated)); err != nil {
+		t.Fatalf("restating the identical sealed rename must merge: %v", err)
+	}
+
+	redirect := `{"tools":{"search":{"rename":"admin"}}}`
+	_, err := lagom.Merge(ctx, []byte(sealed), []byte(redirect))
+	if err == nil {
+		t.Fatal("redirecting a sealed rename must error, got nil")
+	}
+	for _, want := range []string{"search", "find", "admin"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("rejection must name %q (sealed bound and redirect target), got: %v", want, err)
+		}
 	}
 }
 

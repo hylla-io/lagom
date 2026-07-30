@@ -136,6 +136,25 @@
       "overlay": { "tools": { "search": { "presence": "keep" } } }
     },
     {
+      "_note": "Rename over an UNBOUND base name: admitted, and the ok-payload comparison is what pins the rename into every face's merged policy. This case is also the only one here that can catch a STALE go/internal/wasmbin/lagom.wasm, because a pre-88cb040 blob classifies it err while the rust reference says ok (a status drift). Err cases cannot: the comparator compares only classification for err (parity/runners/compare/main.rs).",
+      "name": "merge_rename_overlay_admitted",
+      "op": "merge",
+      "expect": "ok",
+      "base": { "default_presence": "keep", "tools": {} },
+      "overlay": { "default_presence": "keep", "tools": { "search": { "rename": "find" } } }
+    },
+    {
+      "_note": "The sealing half: a base that already SET a rename is a bound, so redirecting it elsewhere is rejected by every face. Classification-only (see above), so this case guards cross-face agreement on the seal; it does not detect a stale blob.",
+      "name": "merge_rename_redirect_rejects",
+      "op": "merge",
+      "expect": "err",
+      "base": {
+        "default_presence": "keep",
+        "tools": { "search": { "presence": "keep", "rename": "find" } }
+      },
+      "overlay": { "default_presence": "keep", "tools": { "search": { "rename": "admin" } } }
+    },
+    {
       "name": "validate_clean_ok",
       "op": "validate",
       "expect": "ok",

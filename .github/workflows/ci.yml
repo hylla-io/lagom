@@ -107,11 +107,50 @@ jobs:
 
   # The wasm/Go face (lagom-wasm + go/) is also outside the workspace gate:
   # lagom-wasm targets wasm32 (its memory ABI is only meaningful there) and the
-  # Go module runs the embedded blob via wazero. This job rebuilds the wasm
-  # (refreshing the committed blob), then runs the Go tests against that freshly
-  # built blob under CGO_ENABLED=0 — so a lagom-core change that alters wasm
-  # behavior is caught, and the go-get-clean (no-cgo) guarantee is enforced by
-  # the test path itself.
+  # Go module runs the embedded blob via wazero.
+  #
+  # Blob-drift gating — what these steps DO and DO NOT enforce.
+  #
+  # `just wasm` OVERWRITES go/internal/wasmbin/lagom.wasm (justfile "wasm"), so
+  # any Go step placed after it tests the freshly built blob and is blind to a
+  # stale COMMITTED one. The first step below therefore runs the Go suite against
+  # the committed blob exactly as checked out; the later steps re-run it against
+  # the rebuild. Enforced: for the behavior the Go tests + parity fixtures cover,
+  # a committed blob that predates a lagom-core change fails the FIRST step
+  # (go/lagom_test.go TestMergeAdmitsOverlayRename is the current detector — it
+  # fails on any blob built before 88cb040). NOT enforced: byte identity of the
+  # committed blob, and any core change no Go test or parity case exercises.
+  #
+  # Byte identity is deliberately NOT gated by `git diff --exit-code` after
+  # `just wasm`: the blob's bytes depend on WHERE it was built. The release build
+  # is deterministic for a fixed toolchain + dependency versions + source-path
+  # roots (measured 2026-07-29: a rebuild into a different CARGO_TARGET_DIR
+  # reproduced the tracked blob's sha256 exactly), but two of those inputs are
+  # environment-specific:
+  #   * dependency panic-location strings are embedded as ABSOLUTE paths rooted
+  #     at the building user's CARGO_HOME
+  #     (`/Users/<dev>/.cargo/registry/src/<registry>/<crate>-<ver>/src/...` from
+  #     a macOS dev box). They live in .rodata, not debuginfo, so the
+  #     `strip = true` in crates/lagom-wasm/Cargo.toml leaves them in: the tracked
+  #     blob was built with it, has no .debug_info, and still carries the paths.
+  #     Rewriting those roots changes the artifact — a local rebuild with
+  #     `--remap-path-prefix` produced a different sha256.
+  #   * sysroot panic locations carry the rustc commit hash
+  #     (`/rustc/<hash>/library/...`), so a toolchain bump also moves the bytes.
+  # Occurrence counts are measured, not asserted here — they move with the
+  # toolchain. To re-measure:
+  #   rg -a -o '/Users/' go/internal/wasmbin/lagom.wasm | wc -l
+  # On 2026-07-29 that yielded 71 for the blob as committed and 84 for a
+  # same-machine rebuild one toolchain later. So a diff gate would be expected to
+  # fail on routine runs instead of isolating real drift.
+  #
+  # The cross-binding semantic gate on the committed blob is the `parity` job:
+  # `just go-parity` (justfile) runs go/parity, which consumes the in-repo
+  # binding via `replace ... => ../` and so embeds the committed blob, and the
+  # comparator flags any status/payload divergence from the rust reference. That
+  # detection depends on a fixture case covering the changed behavior, and only
+  # for `ok` cases — err cases compare classification only
+  # (parity/runners/compare/main.rs).
   wasm-go:
     runs-on: ubuntu-latest
     steps:
@@ -124,9 +163,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      # MUST stay first — order is load-bearing: `just wasm` (next step)
+      # overwrites the blob, so this step reads it as checked out while the two Go
+      # steps after it read the rebuild. This is not the repo's sole
+      # committed-blob reader: the `parity` job's `just parity` also runs against
+      # it (go/parity replaces the binding with `../`, and go/internal/wasmbin
+      # go:embeds the tracked file).
+      - name: go tests against the COMMITTED blob (stale-blob gate)
+        run: just go-test
       - name: build wasm + refresh embedded blob
         run: just wasm
-      - name: go tests (CGO-free)
+      - name: go tests (CGO-free) against the rebuilt blob
         run: just go-test
       - name: mcp-go consumption examples (CGO-free)
         run: just examples
@@ -135,6 +182,12 @@ jobs:
   # all four faces (rust / go-via-wasm / python / node) and asserts byte-identical
   # output. A behavior change that lands in one binding but not the others fails
   # here. Needs every toolchain, so it is its own job.
+  #
+  # This job MUST NOT gain a `just wasm` step: `just go-parity` embeds the
+  # COMMITTED go/internal/wasmbin/lagom.wasm (go/parity replaces the binding with
+  # `../`), which is what makes this job the semantic gate on that blob. The
+  # wasm32 target below is a toolchain convenience only — nothing here rebuilds
+  # the blob.
   parity:
     runs-on: ubuntu-latest
     steps:
