@@ -72,9 +72,26 @@ py-test:
 # repo's rustc is Homebrew while the wasm std lives under rustup, so we drive the
 # rustup `stable` toolchain explicitly (its cargo + rustc) to avoid the Homebrew
 # rustc shadowing the cross-target std.
+#
+# --remap-path-prefix strips build-machine absolute paths out of the blob. They
+# arrive as panic-location metadata (`file!()` / `#[track_caller]` strings in
+# .rodata), so `strip`/`lto`/`opt-level` in crates/lagom-wasm/Cargo.toml do NOT
+# remove them — measured 2026-07-29. This matters because the blob is committed
+# and republished in the `go/vX` module zip, which proxy.golang.org caches
+# immutably: a leaked $HOME is unrecallable once published. `trim-paths` would be
+# the idiomatic fix but is not stabilised in cargo 1.97.0, and `-Ztrim-paths`
+# needs nightly, which line 76 deliberately does not use.
+# Scope of the remap: it covers the registry, the rustup toolchain (including its
+# host-triple segment), and the workspace root. Sysroot paths are already
+# remapped by rustc to /rustc/<hash>/. It does NOT promise the blob is free of
+# every possible machine-specific string — verify with:
+#   strings -a go/internal/wasmbin/lagom.wasm | rg -c "$HOME|$(whoami)"   # expect 0
 wasm:
-    RUSTC="$(rustup which --toolchain stable rustc)" rustup run stable cargo build --release --target wasm32-unknown-unknown -p lagom-wasm --manifest-path crates/lagom-wasm/Cargo.toml
+    RUSTC="$(rustup which --toolchain stable rustc)" \
+    RUSTFLAGS="--remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}/=/rustup/ --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry/src/=/cargo-registry/ --remap-path-prefix=$(pwd)/=/lagom/ --remap-path-prefix=$(rustup run stable rustc --print sysroot)/lib/rustlib/src/rust/=/rust-std/ --remap-path-prefix=$(rustup run stable rustc --print sysroot)/=/rust-sysroot/" \
+    rustup run stable cargo build --release --target wasm32-unknown-unknown -p lagom-wasm --manifest-path crates/lagom-wasm/Cargo.toml
     cp crates/lagom-wasm/target/wasm32-unknown-unknown/release/lagom_wasm.wasm go/internal/wasmbin/lagom.wasm
+    @strings -a go/internal/wasmbin/lagom.wasm | rg -q "$HOME|$(whoami)" && { echo "FAIL: build-machine paths leaked into lagom.wasm"; exit 1; } || echo "wasm: no build-machine paths in blob"
 
 # Test the Go binding in-process via wazero (pure Go, no cgo). Proves project()
 # drops a tool + pins/hides an arg, and that the module is `go get`-clean: the
