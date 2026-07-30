@@ -238,6 +238,16 @@ dependency and the full gate (`just ci`, `go-test`, `parity`, `node-test`) is
 green on the integrated tree. `crates/lagom-node/index.js` was regenerated
 under the bumped napi CLI so its binding-version checks match this release.
 
+**Consumer impact — the Go module's language floor rises in a patch release.**
+`go/go.mod` requires `go 1.25.0`, where `go/v0.1.0` required `go 1.24`; the
+wazero 1.12.0 bump carries it, and `golang.org/x/sys v0.44.0` enters as a new
+indirect dependency through the same bump. A consumer pinned to Go 1.24 can
+therefore build `go/v0.1.0` but not `go/v0.1.1`. This is unusual for a patch
+version and is called out rather than buried: the floor came from the
+Dependabot commits already on `main`, not from this release's own changes.
+The 72-hour basis above is the Dependabot commit dates; `golang.org/x/sys`
+arrived transitively and its own publish date was not independently checked.
+
 ## [0.1.0] — 2026-07-06
 
 First release. One transport-less Rust core (`lagom-core`) behind four faces at
