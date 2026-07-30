@@ -59,15 +59,50 @@ until it is green.
 - **Hexagonal / dependency-inverted**: everything depends on the pure
   `lagom-core`; nothing pure depends on transport (ADR-0001). The stdio proxy
   and CLI are thin adapters. Do not reach transport types into the core.
-- **`lagom-core` is DONE and green** — `Policy`, `project`, `rewrite`, `merge`,
-  `validate`. Depend on it; do not reimplement or edit it except to add it as a
-  dependency.
+- **`lagom-core` is STABLE, not frozen** (amended 2026-07-29). It holds `Policy`,
+  `project`, `rewrite`, `merge`, `validate`, and remains the single source of
+  behavior — never reimplement it in a face. The former "DONE and green — do not
+  edit it" rule is RETIRED: a 2026-07-29 adversarial review located two confirmed
+  security defects inside this crate (`merge` sealed every rename against a
+  synthesized base, making `PolicyBuilder::rename` unexpressible through the
+  node/py/go mint faces; `rewrite` forwarded case/whitespace name variants of a
+  dropped tool instead of refusing them) — both fixed in `d373b47`, `88cb040`.
+  A rule asserting the crate is finished is not a reason to leave a confirmed
+  authority defect in it; `04c7e5a` had already added `guard.rs`/`mint.rs` here
+  for capability work, so the freeze did not hold in practice either.
+  Any edit here — correctness, security, or SPEC-planned capability/parity —
+  carries: a named invariant, focused tests, an independent adversarial lens, and
+  binding-parity propagation per NO DRIFT below.
 - **Smallest concrete design.** No abstraction for hypothetical future variation.
 - **Idiomatic Rust** — naming, module structure, import grouping (std /
   third-party / local), errors wrapped with `thiserror` and bubbled at clean
   boundaries; never swallow (`SPEC.md` §9.1).
 - **Doc comments** (`///`) on every public item; module docs (`//!`) cite the
   relevant `SPEC.md` section.
+- **ABSOLUTE-CLAIM RULE (2026-07-29, HARD).** An absolute quantifier in doc prose
+  — never / only / cannot / always / every / impossible / guaranteed / exhaustive /
+  "in all cases" / "no path" — is permissible ONLY when the claim is mechanically
+  locked AND the comment cites that lock inline. Three lock classes:
+  (1) a named test, (2) the type system, (3) for EXTERNAL/spec facts, the spec
+  version plus changelog PR; a claim restating SPEC.md-mandated behavior may cite
+  the SPEC § (this composes with the Doc-comments rule above, which already
+  REQUIRES a SPEC § cite). Otherwise scope the claim ("for X inputs …") and
+  enumerate the paths it does NOT cover. `crates/lagom-proxy/src/bridge.rs`'s
+  module doc is the model, including its spec-cited absolutes.
+  Grep-LOCATABLE, not grep-checkable: grep finds the candidates, the citation is
+  the check. Applies PROSPECTIVELY to new or touched prose; known committed
+  offenders are fixed by their own unit, never by a silent sweep.
+  Rationale: successive review rounds produced FALSE absolutes — name resolution
+  "EXACT and fail-closed" and the upstream surface "held by `Guard`" (both landed
+  in `d373b47` and are live in `rewrite.rs`; the latter is false as committed
+  because `Guard` stores only `{policy, slim_defs}`, `guard.rs:37-40`), plus
+  "there is no path from cannot-correlate to forward-the-raw-surface", protocol
+  `2024-11-05` "permitted batching", and "the **only** place this crate hands a
+  policy to the proxy" (these three caught pre-commit). Each was contradicted by
+  real bytes or by the cited spec.
+  **This binds DISPATCH LANGUAGE too:** a prompt must ask a builder to "state
+  exactly what is enforced and cite the lock", NEVER to "document X as
+  fail-closed". The orchestrator's own wording caused this class.
 - **Tests**: co-located `#[cfg(test)]` modules, table-driven and
   behavior-oriented. TDD where practical; ship small tested increments.
 
