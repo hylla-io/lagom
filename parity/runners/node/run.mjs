@@ -64,9 +64,17 @@ function runCase(c) {
       case "mint":
         return ok(mintRecord(c));
       case "refire": {
-        const src = byName.get(c.mint_of);
-        if (!src) throw new Error(`refire references unknown case ${c.mint_of}`);
-        const record = mintRecord(src); // referenced mint must succeed
+        // An inline `record` is the on-disk shape refire reads back, passed
+        // whole so a refusal on the mint shapes is compared; `mint_of` reuses a
+        // named mint case's record, which is always well-formed.
+        let record;
+        if (!isNull(c.record)) {
+          record = JSON.stringify(c.record);
+        } else {
+          const src = byName.get(c.mint_of);
+          if (!src) throw new Error(`refire references unknown case ${c.mint_of}`);
+          record = mintRecord(src);
+        }
         return ok(lagom.refire(record));
       }
       default:

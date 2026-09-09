@@ -61,8 +61,13 @@ def run_case(case, by_name, upstream_json):
         if op == "mint":
             return ok(mint_record(case))
         if op == "refire":
-            src = by_name[case["mint_of"]]
-            record = mint_record(src)  # referenced mint must succeed
+            # An inline `record` is the on-disk shape refire reads back, passed
+            # whole so a refusal on the mint shapes is compared; `mint_of`
+            # reuses a named mint case's record, which is always well-formed.
+            if case.get("record") is not None:
+                record = json.dumps(case["record"])
+            else:
+                record = mint_record(by_name[case["mint_of"]])
             return ok(lagom.refire(record))
     except ValueError:
         return {"status": "err", "payload": None}

@@ -40,6 +40,9 @@ type caseSpec struct {
 	Dynamic         json.RawMessage `json:"dynamic"`
 	UpstreamCommand json.RawMessage `json:"upstream_command"`
 	MintOf          string          `json:"mint_of"`
+	// Record is a refire case's inline on-disk mint record, used instead of
+	// MintOf so an unknown key in the persisted mint shapes reaches the engine.
+	Record json.RawMessage `json:"record"`
 }
 
 // result is the per-case outcome: an ok payload (the engine's JSON) or an err.
@@ -104,13 +107,17 @@ func runCase(ctx context.Context, c caseSpec, byName map[string]caseSpec, upstre
 		}
 		return ok(out)
 	case "refire":
-		src, found := byName[c.MintOf]
-		if !found {
-			panic(fmt.Sprintf("refire references unknown case %q", c.MintOf))
-		}
-		record, err := mintRecord(ctx, src)
-		if err != nil {
-			panic(fmt.Sprintf("referenced mint %q must succeed: %v", c.MintOf, err))
+		record := []byte(c.Record)
+		if isNull(c.Record) {
+			src, found := byName[c.MintOf]
+			if !found {
+				panic(fmt.Sprintf("refire references unknown case %q", c.MintOf))
+			}
+			minted, err := mintRecord(ctx, src)
+			if err != nil {
+				panic(fmt.Sprintf("referenced mint %q must succeed: %v", c.MintOf, err))
+			}
+			record = minted
 		}
 		out, err := lagom.Refire(ctx, record)
 		if err != nil {

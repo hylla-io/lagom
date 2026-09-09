@@ -34,7 +34,7 @@ spec-cross-checked feature inventory lives in [`FEATURES.md`](FEATURES.md).
 ## Install
 
 lagom installs **straight from this repo** — Go-style, no registry account
-needed on either side. Pin a tag (e.g. `v0.1.1`) for reproducible installs.
+needed on either side. Pin a tag (e.g. `v0.1.2`) for reproducible installs.
 (Registry publishing to crates.io / PyPI / npm is **planned** — the pipeline is
 wired in [`.github/workflows/release.yml`](.github/workflows/release.yml) and
 switches on per-registry when its token secret is added; until then those jobs
@@ -45,7 +45,7 @@ skip cleanly. See [`ROADMAP.md`](ROADMAP.md) for the plan and its triggers, and
 
 ```sh
 cargo install --git https://github.com/hylla-io/lagom lagom-cli
-# installs the `lagom` binary into ~/.cargo/bin; add e.g. --tag v0.1.1 to pin
+# installs the `lagom` binary into ~/.cargo/bin; add e.g. --tag v0.1.2 to pin
 ```
 
 Or from a clone:
@@ -68,7 +68,7 @@ Depend on the core (or any crate in the chain) as a git dependency:
 
 ```toml
 [dependencies]
-lagom-core = { git = "https://github.com/hylla-io/lagom", tag = "v0.1.1" }
+lagom-core = { git = "https://github.com/hylla-io/lagom", tag = "v0.1.2" }
 ```
 
 One caveat: crates.io **forbids git dependencies in published crates**, so if

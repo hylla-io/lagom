@@ -51,32 +51,54 @@ fn from<T: serde::de::DeserializeOwned>(label: &str, v: &Value) -> T {
     serde_json::from_value(v.clone()).unwrap_or_else(|e| panic!("fixture {label}: {e}"))
 }
 
+/// Deserialize a *policy-shaped* fixture input, classifying a refusal as an `err`
+/// result instead of panicking.
+///
+/// WHY this one input is fallible while [`from`] stays panicking: every other
+/// face hands the policy across a JSON boundary (wasm bytes, PyO3 string, napi
+/// string), so a `deny_unknown_fields` refusal reaches their runner as an
+/// ordinary error return and classifies `err`. The reference must model the same
+/// boundary, or an unknown-key case would abort this runner rather than be
+/// compared — and the comparator would never see the drift it exists to catch.
+fn policy_from(v: &Value) -> Result<Policy, ()> {
+    serde_json::from_value(v.clone()).map_err(|_| ())
+}
+
 /// Run one case through the Rust core face.
 fn run_case(case: &Map<String, Value>, by_name: &BTreeMap<String, Value>, upstream: &[ToolDef]) -> CaseResult {
     let op = case["op"].as_str().expect("case op");
     match op {
         "project" => {
-            let policy: Policy = from("policy", &case["policy"]);
+            let Ok(policy) = policy_from(&case["policy"]) else {
+                return err();
+            };
             ok(serde_json::to_string(&project(upstream, &policy)).unwrap())
         }
         "rewrite" => {
             let call: ToolCall = from("call", &case["call"]);
-            let policy: Policy = from("policy", &case["policy"]);
+            let Ok(policy) = policy_from(&case["policy"]) else {
+                return err();
+            };
             match rewrite(&call, &policy) {
                 Ok(upstream_call) => ok(serde_json::to_string(&upstream_call).unwrap()),
                 Err(_) => err(),
             }
         }
         "merge" => {
-            let base: Policy = from("base", &case["base"]);
-            let overlay: Policy = from("overlay", &case["overlay"]);
+            let (Ok(base), Ok(overlay)) =
+                (policy_from(&case["base"]), policy_from(&case["overlay"]))
+            else {
+                return err();
+            };
             match merge(&base, &overlay) {
                 Ok(merged) => ok(serde_json::to_string(&merged).unwrap()),
                 Err(_) => err(),
             }
         }
         "validate" => {
-            let policy: Policy = from("policy", &case["policy"]);
+            let Ok(policy) = policy_from(&case["policy"]) else {
+                return err();
+            };
             match validate(&policy, upstream) {
                 Ok(()) => ok("null".to_string()),
                 Err(_) => err(),
@@ -87,13 +109,28 @@ fn run_case(case: &Map<String, Value>, by_name: &BTreeMap<String, Value>, upstre
             Err(()) => err(),
         },
         "refire" => {
-            // Refire takes the record produced by the referenced mint case.
-            let mint_name = case["mint_of"].as_str().expect("refire mint_of");
-            let source = by_name
-                .get(mint_name)
-                .unwrap_or_else(|| panic!("refire references unknown case {mint_name}"));
-            let source = source.as_object().unwrap();
-            let record = mint_record(source).expect("referenced mint must succeed");
+            // Two input shapes. `record` is the on-disk shape the CLI's
+            // `refire --record` reads back, deserialized here so a
+            // `deny_unknown_fields` refusal on the mint shapes is COMPARED;
+            // `mint_of` reuses the record a named mint case produced, which can
+            // only ever be well-formed.
+            let record = match case.get("record") {
+                // Fallible for the same reason `policy_from` is: every other
+                // face parses this record from a JSON string, so a refusal must
+                // reach the comparator as `err` rather than abort the runner.
+                Some(v) => match serde_json::from_value::<MintRecord>(v.clone()) {
+                    Ok(record) => record,
+                    Err(_) => return err(),
+                },
+                None => {
+                    let mint_name = case["mint_of"].as_str().expect("refire mint_of");
+                    let source = by_name
+                        .get(mint_name)
+                        .unwrap_or_else(|| panic!("refire references unknown case {mint_name}"));
+                    let source = source.as_object().unwrap();
+                    mint_record(source).expect("referenced mint must succeed")
+                }
+            };
             ok(serde_json::to_string(&refire(&record)).unwrap())
         }
         other => panic!("unknown op {other}"),
@@ -103,10 +140,10 @@ fn run_case(case: &Map<String, Value>, by_name: &BTreeMap<String, Value>, upstre
 /// Build a `MintRecord` from a mint case, or `Err(())` on a widening overlay.
 fn mint_record(case: &Map<String, Value>) -> Result<MintRecord, ()> {
     let run_id = case["run_id"].as_str().expect("mint run_id");
-    let base: Policy = from("base", &case["base"]);
+    let base = policy_from(&case["base"])?;
     let dynamic: Option<Policy> = match case.get("dynamic") {
         Some(Value::Null) | None => None,
-        Some(v) => Some(from("dynamic", v)),
+        Some(v) => Some(policy_from(v)?),
     };
     let upstream: UpstreamCommand = from("upstream_command", &case["upstream_command"]);
     mint(run_id, &base, dynamic.as_ref(), upstream).map_err(|_| ())
