@@ -262,6 +262,39 @@ mod tests {
         assert!(matches!(err, ProxyError::Config(_)), "{err:?}");
     }
 
+    /// A typo'd policy key in `dynamic_inputs` must fail the mint rather than
+    /// yield a silently non-narrowing overlay (`SPEC.md` §8.1 per-agent scoping,
+    /// §9.1 never swallow). Covers the two classes that deserialized as `Ok`
+    /// before `Policy`/`ToolPolicy` gained `deny_unknown_fields`: the kebab
+    /// `default-presence` (canonical on the `lagom.toml` face, so a copy-paste
+    /// restored `Keep`) and a typo'd `args` (the pin vanished). Asserts the error
+    /// CLASSIFICATION and the `<dynamic_inputs>` source, not message text —
+    /// per-face framing is a documented difference (`parity/README.md:18-22`).
+    #[test]
+    fn mint_typoed_dynamic_overlay_key_is_rejected_not_silently_widened() {
+        for (case, dynamic) in [
+            (
+                "kebab default-presence",
+                json!({"default-presence": "drop"}),
+            ),
+            (
+                "typoed args",
+                json!({"tools": {"search": {"arg": {"artifact": {"pin": "hylla"}}}}}),
+            ),
+        ] {
+            let sources = PolicySources {
+                config_paths: vec![],
+                upstream: cmd(),
+                dynamic_inputs: dynamic,
+            };
+            let err = mint(&sources).unwrap_err();
+            let ProxyError::Config(lagom_config::ConfigError::Lower { path, .. }) = &err else {
+                panic!("{case}: expected a typed config error, got {err:?}");
+            };
+            assert_eq!(path, &PathBuf::from("<dynamic_inputs>"), "{case}");
+        }
+    }
+
     #[test]
     fn mint_is_deterministic() {
         let tmp = TempDir::new("det");

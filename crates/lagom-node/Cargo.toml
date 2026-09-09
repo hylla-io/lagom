@@ -7,7 +7,7 @@ description = "Node.js/TypeScript binding (napi-rs) exposing lagom's project/rew
 # `lagom-py` and keeps the `just ci` gate green on machines without the napi
 # toolchain. Because it is excluded it cannot inherit `[workspace.package]`, so
 # these are set explicitly.
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/hylla-io/lagom"

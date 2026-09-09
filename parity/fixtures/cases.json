@@ -198,6 +198,97 @@
       "op": "refire",
       "expect": "ok",
       "mint_of": "mint_narrow_ok"
+    },
+    {
+      "_note": "UNKNOWN-KEY BLOCK (4 cases). Every case here carries a key the Policy model does not define. A face whose engine denies unknown fields classifies err; a face whose engine ignores them classifies ok on a policy that no longer means what its author wrote. So this block is also the WASM-STALENESS GATE the fixture set previously lacked: a stale go/internal/wasmbin/lagom.wasm classifies all four ok against the rust reference's err and the comparator reports a status drift. Each case is shaped so the stale engine's op actually SUCCEEDS -- an unknown key that merely produced a different err would be invisible, because the comparator compares only classification for err (parity/runners/compare/main.rs). THIS CASE: the lagom.toml spelling `default-presence` pasted into a wire policy. On an engine that ignores it the seal reverts to the Keep default and write_file survives projection -- a sealed sandbox downgraded to passthrough, with an ok.",
+      "name": "project_kebab_default_presence_rejects",
+      "op": "project",
+      "expect": "err",
+      "policy": {
+        "default-presence": "drop",
+        "tools": { "search": { "presence": "keep" } }
+      }
+    },
+    {
+      "_note": "Singular `arg`. On an engine that ignores it the pin vanishes: `artifact` stays in the projected schema and the agent keeps setting it itself, while the projection still reads correct under audit.",
+      "name": "project_typoed_args_key_rejects",
+      "op": "project",
+      "expect": "err",
+      "policy": {
+        "default_presence": "drop",
+        "tools": {
+          "search": {
+            "presence": "keep",
+            "arg": { "artifact": { "pin": "hylla" } }
+          }
+        }
+      }
+    },
+    {
+      "_note": "Misspelled `presence`. On an engine that ignores it the tool falls through to default_presence and is dropped -- the opposite of the author's intent, with no diagnostic.",
+      "name": "project_typoed_presence_key_rejects",
+      "op": "project",
+      "expect": "err",
+      "policy": {
+        "default_presence": "drop",
+        "tools": { "search": { "presense": "keep" } }
+      }
+    },
+    {
+      "_note": "`maximum` inside a range. On an engine that ignores it the bound parses as {min:1,max:none} -- a PARTIAL parse -- so limit=999 is admitted by a policy whose author capped it at 50. Half the bound enforced, and the call reads legitimate.",
+      "name": "rewrite_range_typoed_maximum_rejects",
+      "op": "rewrite",
+      "expect": "err",
+      "call": { "name": "search", "arguments": { "artifact": "x", "query": "a", "limit": 999 } },
+      "policy": {
+        "tools": {
+          "search": {
+            "args": { "limit": { "constrain": { "range": { "min": 1.0, "maximum": 50.0 } } } }
+          }
+        }
+      }
+    },
+    {
+      "_note": "MINT-SHAPE half of the unknown-key block. The four cases above bound `Policy` only; this one bounds the persisted mint shapes (MintRecord -> PolicySources -> UpstreamCommand), which no other case reaches. A refire case carrying `record` hands that on-disk shape across the same JSON boundary in every face, so the guard is compared rather than bypassed -- unlike `upstream_command`, which the Python and Node runners destructure into command/args/env and never pass whole. THIS CASE: singular `arg` in both recorded upstream commands. On an engine that ignores it `args` falls to its `#[serde(default)]` empty vec, refire returns ok, and the proxy launches the correct executable stripped of `--sealed` -- what RUNS changes, and the record still reads correct under audit. Everything else in the record is well-formed, so the err is attributable to the unknown key alone.",
+      "name": "refire_record_typoed_args_key_rejects",
+      "op": "refire",
+      "expect": "err",
+      "record": {
+        "run_id": "agent-9",
+        "sources": {
+          "config_paths": [],
+          "upstream": { "command": "srv", "arg": ["--sealed"], "env": [] },
+          "dynamic_inputs": null
+        },
+        "resolved": {
+          "policy": {
+            "default_presence": "drop",
+            "tools": { "search": { "presence": "keep" } }
+          },
+          "upstream": { "command": "srv", "arg": ["--sealed"], "env": [] }
+        }
+      }
+    },
+    {
+      "_note": "DISCRIMINATION CONTROL for the case above: the same record with the key spelled `args`. Every face must classify it ok, so the sibling's err is attributable to the unknown key and not to some unrelated defect in the record's shape. Its ok-payload is also byte-compared, so this case doubles as a staleness detector on the refire path.",
+      "name": "refire_record_inline_ok",
+      "op": "refire",
+      "expect": "ok",
+      "record": {
+        "run_id": "agent-9",
+        "sources": {
+          "config_paths": [],
+          "upstream": { "command": "srv", "args": ["--sealed"], "env": [] },
+          "dynamic_inputs": null
+        },
+        "resolved": {
+          "policy": {
+            "default_presence": "drop",
+            "tools": { "search": { "presence": "keep" } }
+          },
+          "upstream": { "command": "srv", "args": ["--sealed"], "env": [] }
+        }
+      }
     }
   ]
 }

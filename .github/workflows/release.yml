@@ -209,5 +209,27 @@ jobs:
       - uses: actions/checkout@v7
       - name: push go module tag
         run: |
-          git tag "go/${GITHUB_REF_NAME}" "${GITHUB_SHA}"
-          git push origin "go/${GITHUB_REF_NAME}"
+          set -euo pipefail
+          TAG="go/${GITHUB_REF_NAME}"
+          # Idempotent by remote state. A bare tag+push turns a re-run — or a
+          # release whose later jobs are retried — into a red workflow on
+          # `! [rejected] ... (already exists)`, even though the tag it wanted
+          # is already published. An existing tag on THIS commit is the desired
+          # end state, so skip it. An existing tag on a DIFFERENT commit is a
+          # real inconsistency and must fail loud, never force-push: the Go
+          # module proxy caches a published version immutably.
+          # Both the tag ref and its ^{} peel are queried so an annotated tag
+          # compares correctly against the commit SHA.
+          existing="$(git ls-remote origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}" | cut -f1 | tr '\n' ' ')"
+          if [ -n "${existing// /}" ]; then
+            case " ${existing} " in
+              *" ${GITHUB_SHA} "*)
+                echo "${TAG} already published at ${GITHUB_SHA}; nothing to do."
+                exit 0
+                ;;
+            esac
+            echo "::error::${TAG} already exists at ${existing% }, but this release is ${GITHUB_SHA}"
+            exit 1
+          fi
+          git tag "${TAG}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${TAG}"

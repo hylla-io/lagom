@@ -9,7 +9,7 @@ description = "wasm32 face of lagom-core: project/rewrite/merge/validate over a 
 # (`cargo build --release --target wasm32-unknown-unknown -p lagom-wasm`).
 # Because it is excluded it cannot inherit `[workspace.package]`, so these are
 # set explicitly.
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/hylla-io/lagom"

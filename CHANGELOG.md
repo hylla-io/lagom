@@ -6,6 +6,201 @@ All notable changes to lagom. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-09-09
+
+Security release: lagom's own JSON shapes — the programmatic policy face and the
+persisted mint record — accepted keys their models do not define and silently
+discarded them, so a policy could parse `Ok` while meaning less than its author
+wrote, and a record could refire the right executable with none of its
+arguments. No API changes; one behavioral tightening (unknown keys are now a
+deserialization error) that can turn a previously-`Ok` mint or refire into a
+typed failure — see *Upgrade impact* below.
+
+### Security
+
+- **An unknown key in a policy deserialized `Ok` and was dropped, silently
+  widening the projection** (`crates/lagom-core/src/policy.rs`). `Policy`,
+  `ToolPolicy` and `Constraint` now carry `#[serde(deny_unknown_fields)]`, so a
+  key outside the model is a deserialization error instead of a discard. Three
+  concrete losses this closes, each of which produced a policy that reads
+  correct under audit:
+  - `{"default-presence":"drop"}` — lagom's **own canonical spelling on the
+    `lagom.toml` face** — deserialized into an empty `Policy`, whose
+    `default_presence` then defaulted back to `Keep` (`SPEC.md` §3
+    passthrough). A **sealed sandbox was downgraded to passthrough** by a
+    copy-paste between two of lagom's own faces, with no diagnostic.
+  - A typo'd `arg` (singular) inside a tool rule deserialized with `args: {}`,
+    so the author's pin vanished and the agent kept setting that argument
+    itself. A misspelled `presence` fell through to `default_presence` the same
+    way — dropping a tool the author meant to keep, or keeping one they meant
+    to drop.
+  - `{"range":{"min":1,"maximum":5}}` was a **partial** parse:
+    `Range { min: Some(1.0), max: None }`. Half the author's bound was
+    enforced and the resulting call looked legitimate.
+
+  **The asymmetry is what made this dangerous.** The `lagom.toml` face was
+  already guarded — `lagom-config`'s `toml_model.rs:42,56,76` has carried
+  `deny_unknown_fields` since before this release — so a typo in a config file
+  failed loud, while the identical typo on the JSON/programmatic mint face
+  (bindings, `dynamic_inputs`, a persisted policy) passed. Operators
+  reasonably generalized the guarded face's behavior to the unguarded one.
+
+  Locked by ten tests in `policy.rs`: five refusals
+  (`default_presence_kebab_key_is_rejected`, `unknown_policy_key_is_rejected`,
+  `tool_policy_typoed_args_key_is_rejected`,
+  `tool_policy_typoed_presence_key_is_rejected`,
+  `constraint_range_typoed_maximum_is_rejected`), the pre-existing serde
+  behavior they lean on (`constraint_unknown_variant_tag_is_rejected` — an
+  unknown *variant tag* is refused by external tagging, not by this attribute),
+  and four locks that the legitimate surface still parses
+  (`snake_case_default_presence_still_parses`,
+  `empty_document_is_still_passthrough`,
+  `tool_policy_full_legitimate_surface_still_parses`,
+  `constraint_range_with_both_bounds_still_parses`). One further test in
+  `crates/lagom-proxy/src/lib.rs`
+  (`mint_typoed_dynamic_overlay_key_is_rejected_not_silently_widened`) proves
+  the refusal reaches the mint path: a typo'd key in `dynamic_inputs` now fails
+  the mint as `ConfigError::Lower` sourced at `<dynamic_inputs>`, rather than
+  producing a non-narrowing overlay.
+
+  **Scope, stated rather than implied.** The guard covers the `Policy` /
+  `ToolPolicy` / `Constraint` shapes. `ToolDef` and `ToolCall` (`tooldef.rs`)
+  stay lenient **by design** — real MCP `tools/list` entries carry extra keys
+  (`annotations`, `title`, `outputSchema`) and refusing them would break
+  conformant upstreams. The boundary is **our own persisted shapes** versus **an
+  upstream wire shape we do not control**; `mint.rs` is on the first side and is
+  covered by the next entry.
+
+- **A typo'd key in a persisted `MintRecord` launched the upstream stripped of
+  its arguments and environment** (`crates/lagom-core/src/mint.rs`).
+  `UpstreamCommand`, `PolicySources`, `ResolvedPolicy` and `MintRecord` now carry
+  `#[serde(deny_unknown_fields)]`.
+
+  **This one changes what actually runs, not merely what is recorded.**
+  `UpstreamCommand.args` and `.env` carry `#[serde(default)]`, so a record
+  containing `"argz":["MUST_SURVIVE"]` deserialized `Ok` as
+  `{"command":"printf","args":[],"env":[]}`. The path is a real launch path, not
+  a hypothetical: `lagom refire` parses the persisted record
+  (`crates/lagom-cli/src/app.rs:980`), `refire()` clones `record.resolved`
+  (`mint.rs:147`), and the proxy spawns it verbatim —
+  `cmd.args(&resolved.upstream.args)` and `cmd.env(k, v)`
+  (`crates/lagom-proxy/src/bridge.rs:1096-1103`). So a single misspelling ran the
+  **correct executable with none of the arguments or environment it requires**,
+  and the refire reported success.
+
+  `PolicySources` had the same shape on `config_paths`: the singular
+  `config_path` parsed `Ok` with the list empty, recording a mint composed from
+  no config files at all. `PolicySources.dynamic_inputs` stays a free-form
+  `Value` by design — the guard bounds the record's keys, not the captured
+  overlay.
+
+  Locked by eight tests in `mint.rs`: six refusals
+  (`upstream_command_typoed_args_key_is_rejected`,
+  `upstream_command_typoed_env_key_is_rejected`,
+  `policy_sources_typoed_config_paths_key_is_rejected`,
+  `resolved_policy_stray_key_is_rejected`, `mint_record_stray_key_is_rejected`,
+  and the end-to-end `mint_record_with_typoed_args_is_refused_not_refired_empty`,
+  which asserts a whole record with a typo'd `args` is refused at
+  deserialization rather than refired with empty args), plus two locks that the
+  legitimate surface still parses (`full_legitimate_record_still_parses`,
+  `upstream_command_omitted_defaults_still_parse` — the guard refuses unknown
+  keys, it does not make `args`/`env` mandatory).
+
+  **No record written by 0.1.0 or 0.1.1 becomes unreadable.** These four structs
+  are byte-identical across `v0.1.0`, `v0.1.1` and this release, and none of
+  their fields uses `skip_serializing_if`, so a persisted record carries exactly
+  the keys they still declare. The guard can only reject a key no released
+  version ever wrote.
+
+### Testing / CI
+
+- **Six unknown-key parity fixtures** (`parity/fixtures/cases.json`, the
+  `UNKNOWN-KEY BLOCK`), bringing the shared matrix to 24 cases:
+  `project_kebab_default_presence_rejects`, `project_typoed_args_key_rejects`,
+  `project_typoed_presence_key_rejects`,
+  `rewrite_range_typoed_maximum_rejects`, plus the mint-shape pair
+  `refire_record_typoed_args_key_rejects` and its discrimination control
+  `refire_record_inline_ok`.
+
+  **Why they matter beyond covering the fix.** The matrix previously reported
+  `PARITY OK … zero drift` **across a real Rust-vs-Go divergence**, because no
+  fixture exercised an unknown key: the Rust reference denied them while the
+  committed wasm blob, built before the change, ignored them — and nothing
+  asked. These make the fixture set double as the **wasm-blob staleness
+  detector** the matrix lacked. Against a stale
+  `go/internal/wasmbin/lagom.wasm` exactly these drift (`rust=err`, `go=ok`)
+  while the rest stay clean.
+
+  The first four bound `Policy` only. `refire_record_typoed_args_key_rejects`
+  bounds the **persisted mint shapes** (`MintRecord` → `PolicySources` →
+  `UpstreamCommand`), which no other case reaches, so that guard is no longer
+  invisible to the matrix. A `refire` case may now carry an inline `record` —
+  the on-disk shape `refire --record` reads back — instead of `mint_of`;
+  `upstream_command` cannot serve here, because the Python and Node runners
+  destructure it into `command`/`args`/`env` and never hand the object whole to
+  the engine, so a typo'd key there would be invisible to two faces and report
+  a false drift. `refire` itself takes a whole record JSON string on every
+  face, so the guard is compared rather than bypassed.
+
+  **Measured discrimination.** Removing the single `deny_unknown_fields` on
+  `UpstreamCommand` and rebuilding the Rust reference flips exactly one case —
+  `refire_record_typoed_args_key_rejects` — from `err` to `ok`, with payload
+  `…"upstream":{"command":"srv","args":[],"env":[]}`: the correct executable
+  launched stripped of `--sealed`. Every other case, including the
+  byte-identical control `refire_record_inline_ok`, is unchanged. So the case
+  detects that guard's absence and nothing else.
+
+  Each case is shaped so the *stale* engine's operation actually **succeeds**.
+  That shaping is load-bearing: `parity/runners/compare/main.rs` compares only
+  classification for `err`, so an unknown key that merely produced a
+  *different* error would be invisible.
+
+  `parity/runners/rust/main.rs` gained a fallible `policy_from` for
+  policy-shaped fixture inputs. Every other face hands its policy across a JSON
+  boundary (wasm bytes, PyO3 string, napi string), so a refusal reaches its
+  runner as an ordinary error return and classifies `err`; the reference runner
+  previously panicked on a deserialization failure, which would have aborted
+  the run instead of letting the comparator see the drift it exists to catch.
+
+### Fixed
+
+- **`go-tag` in the release workflow is now idempotent**
+  (`.github/workflows/release.yml`). The step was a bare `git tag` + `git push`,
+  which fails the whole release when the `go/vX.Y.Z` tag already exists on the
+  remote. That is not hypothetical: the **`v0.1.1` release run failed there**
+  ([run 30519411394](https://github.com/hylla-io/lagom/actions/runs/30519411394),
+  `! [rejected] go/v0.1.1 -> go/v0.1.1 (already exists)`) after every other job
+  in that run — including `python-publish` and `npm-publish` — had succeeded,
+  because `go/v0.1.1` had already been published at the same release commit.
+  The step now queries remote state first: an existing tag on **this** commit
+  is the desired end state and is skipped; an existing tag on a **different**
+  commit fails loud and is never force-pushed, because the Go module proxy
+  caches a published version immutably. Both `refs/tags/<tag>` and its `^{}`
+  peel are queried so an **annotated** tag compares correctly against the
+  commit SHA — which is what `go/v0.1.1` is.
+
+- **`go/internal/wasmbin/lagom.wasm` regenerated** so the Go face carries the
+  `deny_unknown_fields` engine. Required for the parity matrix to pass; see the
+  staleness note above for why the previous blob's divergence went unreported.
+  The blob is built from `lagom-core`, so **any** change to that crate needs
+  `just wasm` before the matrix says anything about the Go face — the fixture
+  set detects staleness only where a case exercises the changed behavior. The
+  `mint.rs` shapes are now covered by
+  `refire_record_typoed_args_key_rejects`; other behavior may still be
+  uncovered, so the rule stands.
+
+### Upgrade impact
+
+A payload that previously parsed `Ok` while carrying an unrecognised key now
+fails with a typed deserialization error. That is the point of the release: any
+such payload was already not doing what its author wrote. Callers that mint
+from a hand-written JSON policy, or that persist and re-read a policy, should
+expect a refusal where they previously got a silently-widened projection.
+Callers of `lagom refire --record` should expect a refusal on a hand-edited
+record where they previously got a child process launched without its
+arguments. Records written by 0.1.0 or 0.1.1 are unaffected — those shapes never
+carried a key the current models do not declare.
+
 ## [0.1.1] — 2026-07-29
 
 Security release: three authority/diagnostic defects found by adversarial
