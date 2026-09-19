@@ -112,6 +112,9 @@ jobs:
   # napi-rs v3 flow, one build per target in package.json's napi.targets.
   # No npm client anywhere: the napi CLI runs via bunx, publishing via pnpm
   # (docs/RELEASING.md §4). aarch64-linux builds natively on the arm runner.
+  # The napi CLI version is exact and equal to crates/lagom-node/package-lock.json:
+  # `bunx` ignores the lockfile, so a floating major would ship with a CLI younger
+  # than the 72-hour rule allows.
   npm-build:
     strategy:
       fail-fast: false
@@ -139,7 +142,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
       - name: napi build (${{ matrix.target }})
-        run: bunx @napi-rs/cli@3 build --platform --release --target ${{ matrix.target }} --manifest-path Cargo.toml
+        run: bunx @napi-rs/cli@3.10.3 build --platform --release --target ${{ matrix.target }} --manifest-path Cargo.toml
       - uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ matrix.target }}
@@ -172,13 +175,13 @@ jobs:
         if: steps.token.outputs.present == 'true'
       - uses: oven-sh/setup-bun@v2
         if: steps.token.outputs.present == 'true'
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.1.0
         if: steps.token.outputs.present == 'true'
         with:
           version: 10
       - name: create platform npm dirs
         if: steps.token.outputs.present == 'true'
-        run: bunx @napi-rs/cli@3 create-npm-dirs
+        run: bunx @napi-rs/cli@3.10.3 create-npm-dirs
       - uses: actions/download-artifact@v8
         if: steps.token.outputs.present == 'true'
         with:
@@ -187,7 +190,7 @@ jobs:
           path: crates/lagom-node/artifacts
       - name: move .node binaries into npm dirs
         if: steps.token.outputs.present == 'true'
-        run: bunx @napi-rs/cli@3 artifacts
+        run: bunx @napi-rs/cli@3.10.3 artifacts
       - name: publish platform packages + root
         if: steps.token.outputs.present == 'true'
         run: |
