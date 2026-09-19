@@ -22,7 +22,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: govulncheck (go binding + examples)
@@ -160,7 +160,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@just
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       # MUST stay first — order is load-bearing: `just wasm` (next step)
@@ -202,7 +202,7 @@ jobs:
         with:
           node-version: lts/*
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: install maturin
