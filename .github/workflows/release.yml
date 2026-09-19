@@ -72,7 +72,7 @@ jobs:
           command: build
           args: --release -m crates/lagom-py/Cargo.toml -o dist
           manylinux: auto
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}
           path: dist
@@ -140,7 +140,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: napi build (${{ matrix.target }})
         run: bunx @napi-rs/cli@3 build --platform --release --target ${{ matrix.target }} --manifest-path Cargo.toml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ matrix.target }}
           path: crates/lagom-node/*.node
