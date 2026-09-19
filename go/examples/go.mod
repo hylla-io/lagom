@@ -5,7 +5,7 @@
 // lagom-go via a relative replace, so these examples exercise the real binding.
 module github.com/hylla-io/lagom/go/examples
 
-go 1.25.5
+go 1.26.0
 
 require (
 	github.com/hylla-io/lagom/go v0.0.0
@@ -20,7 +20,7 @@ require (
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/sys v0.44.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 )
 
 replace github.com/hylla-io/lagom/go => ../
