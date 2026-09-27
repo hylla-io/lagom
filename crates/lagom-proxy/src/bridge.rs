@@ -2156,4 +2156,71 @@ mod tests {
             assert_eq!(note["params"]["n"], json!(expected), "{note}");
         }
     }
+
+    /// A surface-bearing notification the upstream emits DURING the drift probe
+    /// is held, and on release is projected exactly as live traffic would be:
+    /// the hold must never be a route around the policy.
+    #[tokio::test]
+    async fn a_held_tool_surface_is_projected_on_release() {
+        let note = format!(
+            r#"{{"jsonrpc":"2.0","method":"notifications/x","result":{{"tools":{}}}}}"#,
+            upstream_tools()
+        );
+        let init = concat!(
+            r#"{"jsonrpc":"2.0","id":"lagom-init-probe","result":{"protocolVersion":"2025-11-25","#,
+            r#""capabilities":{},"serverInfo":{"name":"held-stub","version":"0"}}}"#
+        );
+        let list = format!(
+            r#"{{"jsonrpc":"2.0","id":"lagom-drift-probe","result":{{"tools":{}}}}}"#,
+            upstream_tools()
+        );
+        let harness_init = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        let server = spawn_and_validate(ResolvedPolicy {
+            policy: narrowing_policy(),
+            upstream: UpstreamCommand {
+                command: "sh".into(),
+                args: vec![
+                    "-c".into(),
+                    format!(
+                        "read _l; printf '%s\\n' '{note}' '{init}'; read _l; read _l; \
+                         printf '%s\\n' '{list}'; read _l; printf '%s\\n' '{harness_init}'; \
+                         exec sleep 300"
+                    ),
+                ],
+                env: vec![],
+            },
+        })
+        .await
+        .expect("the stub answers the drift probe");
+
+        let (mut to_proxy, down_in) = tokio::io::duplex(64 * 1024);
+        let (down_out, from_proxy) = tokio::io::duplex(64 * 1024);
+        let bridge = tokio::spawn(server.run_with(down_in, down_out, None, "test-run"));
+        let mut from_proxy = BufReader::new(from_proxy);
+        async fn next(r: &mut BufReader<DuplexStream>) -> Value {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(5), r.read_line(&mut line))
+                .await
+                .expect("a line must arrive")
+                .unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+
+        to_proxy
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n")
+            .await
+            .unwrap();
+        assert_eq!(next(&mut from_proxy).await["id"], json!(1));
+        to_proxy
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
+            .await
+            .unwrap();
+        let released = next(&mut from_proxy).await;
+        assert_eq!(released["method"], json!("notifications/x"), "{released}");
+        assert_projected(&released);
+
+        drop(to_proxy);
+        // Reaps the stub; teardown is locked by its own tests, not this one.
+        let _ = tokio::time::timeout(Duration::from_secs(30), bridge).await;
+    }
 }
