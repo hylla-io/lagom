@@ -103,6 +103,11 @@ func (b *PolicyBuilder) ConstrainPattern(tool, arg, pattern string) *PolicyBuild
 	return b.setArg(tool, arg, map[string]any{"constrain": map[string]any{"pattern": pattern}})
 }
 
+// Forbid removes a tool's arg from the projected schema and rejects any call that carries it.
+func (b *PolicyBuilder) Forbid(tool, arg string) *PolicyBuilder {
+	return b.setArg(tool, arg, "forbid")
+}
+
 // Build emits the authored Policy as JSON.
 func (b *PolicyBuilder) Build() ([]byte, error) {
 	return json.Marshal(map[string]any{"default_presence": b.defaultPresence, "tools": b.tools})

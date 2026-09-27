@@ -7,7 +7,8 @@
 //! `wazero` (a pure-Go wasm runtime, no cgo) from the `lagom-go` module.
 //!
 //! Only the **transport-less** operations are exposed — [`project`],
-//! [`rewrite`], [`merge`], [`validate`]. wasm is pure compute: it cannot spawn
+//! [`rewrite`], [`merge`], [`validate`], [`mint`], [`refire`], and the policy
+//! document pair [`policy_from_document`] / [`policy_to_document`]. wasm is pure compute: it cannot spawn
 //! the upstream child or do stdio, so `mint_stdio_server` / the CLI stay native
 //! (ADR-0001 consequences).
 //!
@@ -52,6 +53,7 @@ use lagom_core::{
     validate as core_validate,
 };
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 /// Status tag written as the first byte of every result buffer: the operation
 /// succeeded and the rest of the buffer is the result JSON.
@@ -291,6 +293,47 @@ fn refire_str(input: &str) -> (u8, String) {
     ok_json(&core_refire(&args.record))
 }
 
+/// JSON envelope for [`policy_from_document`]: the stored policy document, as
+/// its original text. A `Value` here would keep only the last of a repeated
+/// key before lagom-core could refuse it.
+#[derive(Deserialize)]
+struct FromDocumentArgs {
+    document: Box<RawValue>,
+}
+
+/// JSON envelope for [`policy_to_document`]: the policy to store, as its
+/// original text, for the same reason.
+#[derive(Deserialize)]
+struct ToDocumentArgs {
+    policy: Box<RawValue>,
+}
+
+/// Engine glue for [`policy_from_document`]: read a stored policy document
+/// (`SPEC.md` §6.6), emit the `Policy`, or a tagged refusal.
+fn policy_from_document_str(input: &str) -> (u8, String) {
+    let args: FromDocumentArgs = match parse("policy_from_document args", input) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    match lagom_core::document::parse(args.document.get()) {
+        Ok(policy) => ok_json(&policy),
+        Err(e) => (STATUS_ERR, e.to_string()),
+    }
+}
+
+/// Engine glue for [`policy_to_document`]: emit the stored form of a `Policy`.
+/// A policy with no `default_presence` is refused, never stored as `keep`.
+fn policy_to_document_str(input: &str) -> (u8, String) {
+    let args: ToDocumentArgs = match parse("policy_to_document args", input) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    match lagom_core::document::from_policy_json(args.policy.get()) {
+        Ok(doc) => (STATUS_OK, doc),
+        Err(e) => (STATUS_ERR, e.to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Exported wasm functions: thin ABI wrappers over the `*_str` glue.
 // ---------------------------------------------------------------------------
@@ -386,6 +429,35 @@ pub unsafe extern "C" fn mint(ptr: *const u8, len: u32) -> u64 {
 pub unsafe extern "C" fn refire(ptr: *const u8, len: u32) -> u64 {
     // SAFETY: forwarded contract from the module ABI; host owns the buffer.
     unsafe { dispatch(ptr, len, refire_str) }
+}
+
+/// Read a stored policy document (`SPEC.md` §6.6).
+///
+/// Input JSON: `{"document": PolicyDocument}`. Result JSON: the `Policy`. A
+/// missing format, an unsupported format, a missing `default_presence` or an
+/// unknown key surfaces as a tagged error.
+///
+/// # Safety
+///
+/// `ptr`/`len` must describe a host-allocated UTF-8 buffer (see the module ABI).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn policy_from_document(ptr: *const u8, len: u32) -> u64 {
+    // SAFETY: forwarded contract from the module ABI; host owns the buffer.
+    unsafe { dispatch(ptr, len, policy_from_document_str) }
+}
+
+/// Write a policy in its stored form (`SPEC.md` §6.6).
+///
+/// Input JSON: `{"policy": Policy}`. Result JSON: the `PolicyDocument`, stamped
+/// with the format version; the same policy always yields the same bytes.
+///
+/// # Safety
+///
+/// `ptr`/`len` must describe a host-allocated UTF-8 buffer (see the module ABI).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn policy_to_document(ptr: *const u8, len: u32) -> u64 {
+    // SAFETY: forwarded contract from the module ABI; host owns the buffer.
+    unsafe { dispatch(ptr, len, policy_to_document_str) }
 }
 
 #[cfg(test)]
@@ -543,6 +615,56 @@ mod tests {
         .to_string();
         let (tag, _) = mint_str(&mint_in);
         assert_eq!(tag, STATUS_ERR, "re-keeping a dropped tool is widening");
+    }
+
+    /// A stored document round-trips, and a document without `default_presence`
+    /// is refused rather than read as passthrough.
+    #[test]
+    fn policy_document_round_trips_and_refuses_a_missing_presence() {
+        let policy = json!({
+            "default_presence": "drop",
+            "tools": {"search": {"presence": "keep", "args": {"version_pin": "forbid"}}}
+        });
+        let (tag, doc) = policy_to_document_str(&json!({"policy": policy}).to_string());
+        assert_eq!(tag, STATUS_OK, "payload: {doc}");
+        assert!(doc.starts_with(r#"{"lagom_policy":1,"#), "{doc}");
+
+        let doc_value: serde_json::Value = serde_json::from_str(&doc).unwrap();
+        let (tag, back) = policy_from_document_str(&json!({"document": doc_value}).to_string());
+        assert_eq!(tag, STATUS_OK, "payload: {back}");
+        let back: Policy = serde_json::from_str(&back).unwrap();
+        assert_eq!(
+            back.tools["search"].args["version_pin"],
+            lagom_core::ArgPolicy::Forbid
+        );
+
+        let bare = json!({"document": {"lagom_policy": 1, "tools": {}}}).to_string();
+        let (tag, msg) = policy_from_document_str(&bare);
+        assert_eq!(tag, STATUS_ERR);
+        assert!(msg.contains("default_presence"), "{msg}");
+    }
+
+    /// The envelope passes the original text through, so a repeated key inside
+    /// the document still reaches lagom-core and is refused by name.
+    #[test]
+    fn document_envelopes_refuse_a_repeated_key() {
+        let from = r#"{"document":{"lagom_policy":1,"default_presence":"keep","tools":{"s":{"args":{"v":"forbid","v":"passthrough"}}}}}"#;
+        let (tag, msg) = policy_from_document_str(from);
+        assert_eq!(tag, STATUS_ERR, "payload: {msg}");
+        assert!(msg.contains("`v`") && msg.contains("/tools/s/args/v"), "{msg}");
+
+        let to = r#"{"policy":{"default_presence":"drop","default_presence":"keep"}}"#;
+        let (tag, msg) = policy_to_document_str(to);
+        assert_eq!(tag, STATUS_ERR, "payload: {msg}");
+        assert!(msg.contains("/default_presence"), "{msg}");
+    }
+
+    /// A bare policy with no `default_presence` is refused, never stored as `keep`.
+    #[test]
+    fn policy_to_document_refuses_a_missing_presence() {
+        let (tag, msg) = policy_to_document_str(r#"{"policy":{"tools":{}}}"#);
+        assert_eq!(tag, STATUS_ERR, "payload: {msg}");
+        assert!(msg.contains("default_presence"), "{msg}");
     }
 
     /// `alloc`/`dealloc` round-trips a buffer without corrupting memory: write a

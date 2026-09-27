@@ -14,6 +14,7 @@ pip install hylla-lagom     # or: uv add hylla-lagom
 
 ```python
 import lagom  # project, rewrite, merge, validate, mint, refire,
+              # policy_from_document, policy_to_document,
               # mint_stdio_server, PolicyBuilder, Guard, shipped_skills,
               # emit_skills
 ```
@@ -31,6 +32,11 @@ Highlights:
   recorded provenance; identical inputs mint a byte-identical record.
 - **`mint_stdio_server`** — spawn the upstream and serve the projected surface
   on this process's stdio, with optional append-only audit logging.
+- **`PolicyBuilder.forbid(tool, arg)`** — the argument must be absent; a call
+  carrying it raises `ValueError`.
+- **`policy_to_document` / `policy_from_document`** — the strict, versioned form
+  to store a policy with your own settings; lagom holds no database. A repeated
+  key, an unknown key, or a missing `default_presence` raises `ValueError`.
 
 Full documentation, the policy model, and the security model live in the
 [repository README](https://github.com/hylla-io/lagom) and `SPEC.md`. MIT

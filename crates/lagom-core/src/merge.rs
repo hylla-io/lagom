@@ -171,14 +171,23 @@ fn narrow_arg(
 
     match (base, overlay) {
         // A pin is already maximally narrow: only an identical pin is allowed.
+        // Pin → Forbid is a widening too: it withdraws the value the base
+        // guaranteed the upstream would receive.
         (ArgPolicy::Pin(a), ArgPolicy::Pin(b)) if a == b => Ok(ArgPolicy::Pin(b.clone())),
         (ArgPolicy::Pin(_), _) => widen(),
+
+        // Forbid admits no value at all; anything else would admit one.
+        (ArgPolicy::Forbid, ArgPolicy::Forbid) => Ok(ArgPolicy::Forbid),
+        (ArgPolicy::Forbid, _) => widen(),
 
         // Passthrough/Default impose no domain bound: any overlay narrows or holds.
         (ArgPolicy::Passthrough | ArgPolicy::Default(_), ov) => Ok(ov.clone()),
 
-        // A constraint may be tightened to a pin (within the constraint) or to a
-        // strictly tighter constraint; it may not be relaxed or removed.
+        // A constraint may be tightened to a pin (within the constraint), to a
+        // strictly tighter constraint, or to Forbid — an absent argument is
+        // exactly what a constraint already allowed; it may not be relaxed or
+        // removed.
+        (ArgPolicy::Constrain(_), ArgPolicy::Forbid) => Ok(ArgPolicy::Forbid),
         (ArgPolicy::Constrain(c), ArgPolicy::Pin(v)) => {
             if value_satisfies(v, c) {
                 Ok(ArgPolicy::Pin(v.clone()))
@@ -1008,6 +1017,75 @@ mod tests {
         overlay.default_presence = Presence::Drop;
         let merged = merge(&base, &overlay).unwrap();
         assert_eq!(merged.presence_of("search"), Presence::Drop);
+    }
+
+    /// Merge `overlay_ap` onto `base_ap` for one argument `k` of `search`.
+    fn merge_one_arg(
+        base_ap: Option<ArgPolicy>,
+        overlay_ap: ArgPolicy,
+    ) -> Result<Policy, MergeError> {
+        let mut bargs = BTreeMap::new();
+        if let Some(ap) = base_ap {
+            bargs.insert("k".to_string(), ap);
+        }
+        let base = one(
+            "search",
+            ToolPolicy {
+                args: bargs,
+                ..Default::default()
+            },
+            Presence::Keep,
+        );
+        let mut oargs = BTreeMap::new();
+        oargs.insert("k".to_string(), overlay_ap);
+        let overlay = one(
+            "search",
+            ToolPolicy {
+                args: oargs,
+                ..Default::default()
+            },
+            Presence::Keep,
+        );
+        merge(&base, &overlay)
+    }
+
+    /// The whole Forbid row and column of the narrowing table.
+    #[test]
+    fn forbid_merge_table() {
+        let constraint = ArgPolicy::Constrain(Constraint::Enum(vec![json!("a")]));
+        let narrowing: [(&str, Option<ArgPolicy>); 5] = [
+            ("unruled", None),
+            ("passthrough", Some(ArgPolicy::Passthrough)),
+            ("default", Some(ArgPolicy::Default(json!("a")))),
+            ("constrain", Some(constraint.clone())),
+            ("forbid", Some(ArgPolicy::Forbid)),
+        ];
+        for (label, base_ap) in narrowing {
+            let merged = merge_one_arg(base_ap, ArgPolicy::Forbid)
+                .unwrap_or_else(|e| panic!("{label} → forbid must narrow: {e}"));
+            assert_eq!(
+                merged.tools["search"].args["k"],
+                ArgPolicy::Forbid,
+                "{label}"
+            );
+        }
+
+        let pin_to_forbid = merge_one_arg(Some(ArgPolicy::Pin(json!("a"))), ArgPolicy::Forbid);
+        assert!(
+            pin_to_forbid.is_err(),
+            "pin → forbid withdraws the pinned value"
+        );
+
+        for widening in [
+            ArgPolicy::Passthrough,
+            ArgPolicy::Default(json!("a")),
+            constraint,
+            ArgPolicy::Pin(json!("a")),
+        ] {
+            let err = merge_one_arg(Some(ArgPolicy::Forbid), widening.clone())
+                .expect_err("forbid admits no value; every other rule widens it");
+            assert!(err.message.contains("widens argument `k`"), "{widening:?}");
+        }
     }
 
     #[test]

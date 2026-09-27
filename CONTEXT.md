@@ -28,6 +28,16 @@ tool's input schema, so the agent never sees or sets it. Distinct from
 *whitelisting* an arg (which leaves it visible and agent-settable).
 _Avoid_: lock, freeze, fix (use "pin").
 
+**Forbid**:
+To require that a tool argument be absent: it leaves the schema, and a call
+carrying it is refused by name. The counterpart of pin for an argument no value
+may reach — including one the upstream never declared.
+_Avoid_: strip, block (use "forbid"; lagom never strips silently).
+
+**Policy document**:
+The strict, versioned JSON form of a policy that a host stores with its own
+settings and hands to lagom. lagom holds no database and reads no file for it.
+
 **Narrow**:
 To make a projection strictly smaller — drop tools, pin/hide args, shrink docs.
 Projections may only ever narrow, never widen (monotonic). A downstream consumer
@@ -60,7 +70,7 @@ guarantee rather than a suggestion.
 
 **Passthrough**:
 lagom's default for anything a policy does not explicitly drop, pin, constrain,
-or rewrite: it is forwarded unchanged. lagom is transparent except where told
+forbid, or rewrite: it is forwarded unchanged. lagom is transparent except where told
 otherwise. _Avoid_: default-allow, forward (use "passthrough").
 
 **Ephemeral projection**:

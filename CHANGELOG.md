@@ -6,6 +6,64 @@ All notable changes to lagom. Format loosely follows
 
 ## [Unreleased]
 
+## [0.2.0] — unreleased
+
+A host can keep lagom's policies with its own settings, and a policy can
+require an argument to be absent. lagom still holds no database and needs no
+file.
+
+### Added
+
+- **`forbid`** — a new argument rule: the argument must be absent.
+  - A declared argument leaves the projected schema.
+  - A call that carries it (any value, `null` included) is refused by name; it
+    is never stripped.
+  - Valid on an argument the upstream does not declare, so a host can prove a
+    tool never receives it. Refused as drift on a `required` argument.
+  - Narrowing: passthrough, default or constrain → forbid is allowed.
+    Forbid → anything else, and pin → forbid, are widenings.
+  - JSON spelling `"forbid"`; `lagom.toml` spelling `forbid = true`
+    (`forbid = false` is refused); builders gain `forbid(tool, arg)`.
+  - Matches the exact argument name, like every argument rule: an upstream
+    that folds case or trims names must forbid each spelling it accepts.
+- **Policy documents** (`lagom_core::document`) — the strict, versioned JSON a
+  host stores: `{"lagom_policy": 1, "default_presence": …, "tools": …}`.
+  - The format key is read first, so a newer format fails by name.
+  - `default_presence` is required: a stored sealed ceiling can never silently
+    become passthrough.
+  - Unknown keys are refused. A JSON Schema ships as `policy_document_schema()`.
+  - A key repeated in any object, at any depth, is refused as
+    `DocumentError::DuplicateKey`, naming the key and its JSON Pointer. A
+    plain JSON read keeps only the last value, so
+    `"args":{"v":"forbid","v":"passthrough"}` would have lost the forbid.
+    `document::parse` and every binding check the text; `document::from_value`
+    takes an already-merged value and cannot, which its doc says.
+  - `policy_to_document` refuses a policy with no `default_presence`
+    (`DocumentError::MissingDefaultPresence`) rather than store an assumed
+    `keep`. Rust: `document::from_policy_json`.
+  - Every binding: `policy_from_document` / `policy_to_document`
+    (`policyFromDocument`/`policyToDocument` in Node, `PolicyFromDocument`/
+    `PolicyToDocument` in Go).
+- **`lagom_config::parse_str`** — lower `lagom.toml` text with no file.
+- **`lagom_core::VERSION`** — lets a host check the `lagom` binary it launches
+  against the library it linked.
+
+### Changed
+
+- `just wasm` reads the built blob from `$CARGO_TARGET_DIR` when it is set.
+- `lagom-wasm` enables serde_json's `raw_value` feature so the document
+  envelopes pass the original text to lagom-core. No new dependency.
+- Parity fixture cases may carry `document_text` / `policy_text` verbatim, so a
+  repeated key reaches every face.
+
+### Upgrade impact
+
+- **Breaking for Rust callers that match `ArgPolicy` exhaustively**: add a
+  `Forbid` arm. `TomlArgPolicy` gains a public `forbid` field, which breaks a
+  struct literal without `..Default::default()`. JSON-only consumers (Go,
+  Python, Node) are unaffected.
+- A bare `Policy` still parses exactly as before; only documents are stricter.
+
 ## [0.1.2] — 2026-09-09
 
 Security release: lagom's own JSON shapes — the programmatic policy face and the

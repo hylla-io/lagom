@@ -21,6 +21,8 @@ def test_import_exposes_surface():
         "validate",
         "mint",
         "refire",
+        "policy_from_document",
+        "policy_to_document",
         "mint_stdio_server",
         "shipped_skills",
         "emit_skills",
@@ -42,6 +44,8 @@ def test_every_public_symbol_has_a_docstring():
         "validate",
         "mint",
         "refire",
+        "policy_from_document",
+        "policy_to_document",
         "mint_stdio_server",
         "shipped_skills",
         "emit_skills",
@@ -65,6 +69,7 @@ def test_every_public_symbol_has_a_docstring():
                 "constrain_enum",
                 "constrain_range",
                 "constrain_pattern",
+                "forbid",
                 "build",
             ),
         ),
@@ -271,6 +276,55 @@ def test_guard_one_call_helper():
         except ValueError:
             continue
         raise AssertionError(f"gate must reject {bad!r}")
+
+
+def test_forbid_refuses_a_call_carrying_the_arg():
+    """PolicyBuilder.forbid: a call carrying the argument is refused by name;
+    one without it is forwarded."""
+    b = lagom.PolicyBuilder()
+    b.forbid("search", "version_pin")
+    policy = b.build()
+    try:
+        lagom.rewrite(
+            json.dumps({"name": "search", "arguments": {"query": "x", "version_pin": 3}}),
+            policy,
+        )
+    except ValueError as e:
+        assert "version_pin" in str(e)
+    else:
+        raise AssertionError("a forbidden argument must be refused")
+    out = json.loads(lagom.rewrite(json.dumps({"name": "search", "arguments": {"query": "x"}}), policy))
+    assert out["arguments"] == {"query": "x"}
+
+
+def test_policy_document_round_trip():
+    """A host stores the document and reads it back; a document without
+    default_presence is refused rather than read as passthrough."""
+    policy = lagom.PolicyBuilder.sealed().build()
+    doc = lagom.policy_to_document(policy)
+    assert json.loads(doc)["lagom_policy"] == 1
+    assert lagom.policy_from_document(doc) == policy
+    try:
+        lagom.policy_from_document(json.dumps({"lagom_policy": 1}))
+    except ValueError:
+        return
+    raise AssertionError("a document without default_presence must be refused")
+
+
+def test_policy_document_refuses_repeats_and_missing_presence():
+    """A repeated key is refused by path; a bare policy with no
+    default_presence is never stored as keep."""
+    dup = '{"lagom_policy":1,"default_presence":"keep","tools":{"s":{"args":{"v":"forbid","v":"passthrough"}}}}'
+    for call, needle in (
+        (lambda: lagom.policy_from_document(dup), "/tools/s/args/v"),
+        (lambda: lagom.policy_to_document('{"tools":{}}'), "default_presence"),
+    ):
+        try:
+            call()
+        except ValueError as e:
+            assert needle in str(e), str(e)
+            continue
+        raise AssertionError(f"expected a refusal naming {needle}")
 
 
 def test_mint_stdio_server_accepts_optional_audit(tmp_path):

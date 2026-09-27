@@ -420,3 +420,69 @@ func TestRefireMalformedRecordIsError(t *testing.T) {
 		t.Fatal("malformed mint record must error, got nil")
 	}
 }
+
+// TestForbidRefusesACallCarryingTheArg proves the builder's Forbid reaches the
+// embedded engine: a call carrying the argument is refused by name, one
+// without it is forwarded unchanged. Fails on a blob built before Forbid.
+func TestForbidRefusesACallCarryingTheArg(t *testing.T) {
+	ctx := context.Background()
+	policy, err := lagom.NewPolicyBuilder().Forbid("search", "version_pin").Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	_, err = lagom.Rewrite(ctx, []byte(`{"name":"search","arguments":{"query":"a","version_pin":3}}`), policy)
+	if err == nil || !strings.Contains(err.Error(), "version_pin") {
+		t.Fatalf("a forbidden argument must be refused by name, got %v", err)
+	}
+	out, err := lagom.Rewrite(ctx, []byte(`{"name":"search","arguments":{"query":"a"}}`), policy)
+	if err != nil {
+		t.Fatalf("Rewrite without the forbidden arg: %v", err)
+	}
+	if string(out) != `{"name":"search","arguments":{"query":"a"}}` {
+		t.Errorf("call must be forwarded unchanged: %s", out)
+	}
+}
+
+// TestPolicyDocumentRoundTrip proves the stored form round-trips and that a
+// document without default_presence is refused rather than read as passthrough.
+func TestPolicyDocumentRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	policy := []byte(`{"default_presence":"drop","tools":{}}`)
+	doc, err := lagom.PolicyToDocument(ctx, policy)
+	if err != nil {
+		t.Fatalf("PolicyToDocument: %v", err)
+	}
+	if !strings.HasPrefix(string(doc), `{"lagom_policy":1,`) {
+		t.Fatalf("document must be stamped with its format: %s", doc)
+	}
+	back, err := lagom.PolicyFromDocument(ctx, doc)
+	if err != nil {
+		t.Fatalf("PolicyFromDocument: %v", err)
+	}
+	if string(back) != string(policy) {
+		t.Errorf("round trip changed the policy: %s", back)
+	}
+	if _, err := lagom.PolicyFromDocument(ctx, []byte(`{"lagom_policy":1}`)); err == nil {
+		t.Fatal("a document without default_presence must be refused")
+	}
+}
+
+// TestPolicyDocumentRefusesRepeatsAndMissingPresence proves the Go envelope
+// carries the original text to the engine, so a repeated key is refused by
+// name, and that a bare policy with no default_presence is never stored as keep.
+func TestPolicyDocumentRefusesRepeatsAndMissingPresence(t *testing.T) {
+	ctx := context.Background()
+	dup := []byte(`{"lagom_policy":1,"default_presence":"keep","tools":{"s":{"args":{"v":"forbid","v":"passthrough"}}}}`)
+	_, err := lagom.PolicyFromDocument(ctx, dup)
+	if err == nil || !strings.Contains(err.Error(), "/tools/s/args/v") {
+		t.Fatalf("a repeated key must be refused by path, got %v", err)
+	}
+	_, err = lagom.PolicyToDocument(ctx, []byte(`{"default_presence":"drop","default_presence":"keep"}`))
+	if err == nil || !strings.Contains(err.Error(), "/default_presence") {
+		t.Fatalf("a repeated key in a policy must be refused, got %v", err)
+	}
+	_, err = lagom.PolicyToDocument(ctx, []byte(`{"tools":{}}`))
+	if err == nil || !strings.Contains(err.Error(), "default_presence") {
+		t.Fatalf("a policy with no default_presence must be refused, got %v", err)
+	}
+}

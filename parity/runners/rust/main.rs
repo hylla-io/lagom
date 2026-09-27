@@ -19,8 +19,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use lagom_core::{
-    MintRecord, Policy, ToolCall, ToolDef, UpstreamCommand, merge, mint, project, refire, rewrite,
-    validate,
+    MintRecord, Policy, ToolCall, ToolDef, UpstreamCommand, document, merge, mint, project, refire,
+    rewrite, validate,
 };
 use serde_json::{Map, Value, json};
 
@@ -62,6 +62,15 @@ fn from<T: serde::de::DeserializeOwned>(label: &str, v: &Value) -> T {
 /// compared — and the comparator would never see the drift it exists to catch.
 fn policy_from(v: &Value) -> Result<Policy, ()> {
     serde_json::from_value(v.clone()).map_err(|_| ())
+}
+
+/// The JSON text a document case hands the face: `<field>_text` verbatim when
+/// present (a repeated key survives only as text), else `<field>` serialized.
+fn text_of(case: &Map<String, Value>, field: &str) -> String {
+    match case.get(&format!("{field}_text")) {
+        Some(Value::String(text)) => text.clone(),
+        _ => case[field].to_string(),
+    }
 }
 
 /// Run one case through the Rust core face.
@@ -133,6 +142,14 @@ fn run_case(case: &Map<String, Value>, by_name: &BTreeMap<String, Value>, upstre
             };
             ok(serde_json::to_string(&refire(&record)).unwrap())
         }
+        "policy_from_document" => match document::parse(&text_of(case, "document")) {
+            Ok(policy) => ok(serde_json::to_string(&policy).unwrap()),
+            Err(_) => err(),
+        },
+        "policy_to_document" => match document::from_policy_json(&text_of(case, "policy")) {
+            Ok(doc) => ok(doc),
+            Err(_) => err(),
+        },
         other => panic!("unknown op {other}"),
     }
 }

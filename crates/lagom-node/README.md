@@ -74,6 +74,7 @@ validate(policy, upstreamDefsJson);
 | `constrainEnum(tool, arg, valuesJson)` | restrict to an enum subset |
 | `constrainRange(tool, arg, min?, max?)` | numeric range |
 | `constrainPattern(tool, arg, pattern)` | regex pattern |
+| `forbid(tool, arg)` | the arg must be absent; a call carrying it is refused |
 | `build()` | emit the `Policy` as a JSON string |
 
 Value arguments are passed as JSON strings (`JSON.stringify(...)`), exactly like
@@ -120,6 +121,14 @@ const resolved = refire(record); // {"policy","upstream"} JSON, ready to serve; 
 The overlay may only **narrow** the base; any widening throws (the sandbox
 enforcement, `SPEC.md` §5.2). The Node `mint`/`refire` are pure (the wasm-clean
 core), in capability parity with the Go and Python bindings.
+
+## Store policies with your own settings (`SPEC.md` §6.6)
+
+`policyToDocument(policyJson)` returns the strict, versioned form to store;
+`policyFromDocument(documentJson)` reads it back. A document missing
+`default_presence`, carrying an unknown or repeated key, or naming a newer
+format throws. `policyToDocument` throws on a policy with no `default_presence`
+or a repeated key.
 
 ## Spawned-process face
 

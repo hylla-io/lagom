@@ -176,6 +176,26 @@ pub fn refire(record_json: String) -> Result<String> {
     dump_json(&core_refire(&record))
 }
 
+/// Read a stored policy document (`SPEC.md` §6.6) and return the policy as JSON.
+///
+/// The document is the strict, versioned form a host keeps with its own
+/// settings: `lagom_policy` (the format) and `default_presence` are required,
+/// and an unknown or repeated key is refused. A refused document throws an
+/// `Error`.
+#[napi]
+pub fn policy_from_document(document_json: String) -> Result<String> {
+    let policy = lagom_core::document::parse(&document_json).map_err(js_err)?;
+    dump_json(&policy)
+}
+
+/// Return a policy in its stored form (`SPEC.md` §6.6). The same policy always
+/// yields the same bytes. A policy with no `default_presence`, a repeated key,
+/// or a malformed rule throws an `Error`.
+#[napi]
+pub fn policy_to_document(policy_json: String) -> Result<String> {
+    lagom_core::document::from_policy_json(&policy_json).map_err(js_err)
+}
+
 /// Mint a stdio proxy server for `policyJson` over a spawned upstream and serve
 /// it on this process's stdio until the session ends (`SPEC.md` §7.2, §8, §10).
 ///
@@ -465,6 +485,13 @@ impl PolicyBuilder {
             .insert(arg, ArgPolicy::Constrain(Constraint::Pattern(pattern)));
     }
 
+    /// Forbid `tool`'s `arg`: removed from the projected schema, and a call that
+    /// carries it is rejected (`SPEC.md` §4.1).
+    #[napi]
+    pub fn forbid(&mut self, tool: String, arg: String) {
+        self.tool_mut(&tool).args.insert(arg, ArgPolicy::Forbid);
+    }
+
     /// Emit the authored policy as a JSON string, ready for the engine functions.
     #[napi]
     pub fn build(&self) -> Result<String> {
@@ -498,6 +525,34 @@ mod tests {
             }
         ])
         .to_string()
+    }
+
+    /// The builder's `forbid` refuses a call carrying the arg; a stored document
+    /// round-trips and one without `default_presence` throws.
+    #[test]
+    fn forbid_and_policy_document() {
+        let mut b = PolicyBuilder::new();
+        b.forbid("search".into(), "version_pin".into());
+        let policy = b.build().unwrap();
+        let call = json!({"name": "search", "arguments": {"version_pin": 1}}).to_string();
+        assert!(rewrite(call, policy.clone()).is_err());
+
+        let doc = policy_to_document(policy.clone()).unwrap();
+        assert!(doc.starts_with(r#"{"lagom_policy":1,"#), "{doc}");
+        assert_eq!(policy_from_document(doc).unwrap(), policy);
+        assert!(policy_from_document(r#"{"lagom_policy":1}"#.into()).is_err());
+    }
+
+    /// A repeated key and a missing `default_presence` are refused both ways.
+    #[test]
+    fn policy_document_refuses_repeats_and_a_missing_presence() {
+        let dup = r#"{"lagom_policy":1,"default_presence":"keep","tools":{"s":{"args":{"v":"forbid","v":"passthrough"}}}}"#;
+        let msg = policy_from_document(dup.into()).unwrap_err().reason;
+        assert!(msg.contains("/tools/s/args/v"), "{msg}");
+        let msg = policy_to_document(r#"{"tools":{}}"#.into())
+            .unwrap_err()
+            .reason;
+        assert!(msg.contains("default_presence"), "{msg}");
     }
 
     /// A sealed builder that keeps `search` and pins its `artifact` arg drops the

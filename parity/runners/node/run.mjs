@@ -77,6 +77,11 @@ function runCase(c) {
         }
         return ok(lagom.refire(record));
       }
+      case "policy_from_document":
+        // `*_text` is verbatim: a repeated key survives only as text.
+        return ok(lagom.policyFromDocument(c.document_text ?? JSON.stringify(c.document)));
+      case "policy_to_document":
+        return ok(lagom.policyToDocument(c.policy_text ?? JSON.stringify(c.policy)));
       default:
         throw new Error(`unknown op ${c.op}`);
     }

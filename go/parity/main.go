@@ -43,6 +43,21 @@ type caseSpec struct {
 	// Record is a refire case's inline on-disk mint record, used instead of
 	// MintOf so an unknown key in the persisted mint shapes reaches the engine.
 	Record json.RawMessage `json:"record"`
+	// Document is a policy_from_document case's stored policy document.
+	Document json.RawMessage `json:"document"`
+	// DocumentText and PolicyText carry a document or policy as verbatim text,
+	// used instead of Document/Policy when set: a repeated key survives only
+	// as text through the Python and Node fixture loaders.
+	DocumentText *string `json:"document_text"`
+	PolicyText   *string `json:"policy_text"`
+}
+
+// textOr returns text's bytes when set, else raw.
+func textOr(text *string, raw json.RawMessage) []byte {
+	if text != nil {
+		return []byte(*text)
+	}
+	return raw
 }
 
 // result is the per-case outcome: an ok payload (the engine's JSON) or an err.
@@ -120,6 +135,18 @@ func runCase(ctx context.Context, c caseSpec, byName map[string]caseSpec, upstre
 			record = minted
 		}
 		out, err := lagom.Refire(ctx, record)
+		if err != nil {
+			return errResult()
+		}
+		return ok(out)
+	case "policy_from_document":
+		out, err := lagom.PolicyFromDocument(ctx, textOr(c.DocumentText, c.Document))
+		if err != nil {
+			return errResult()
+		}
+		return ok(out)
+	case "policy_to_document":
+		out, err := lagom.PolicyToDocument(ctx, textOr(c.PolicyText, c.Policy))
 		if err != nil {
 			return errResult()
 		}

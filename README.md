@@ -34,7 +34,7 @@ spec-cross-checked feature inventory lives in [`FEATURES.md`](FEATURES.md).
 ## Install
 
 lagom installs **straight from this repo** — Go-style, no registry account
-needed on either side. Pin a tag (e.g. `v0.1.2`) for reproducible installs.
+needed on either side. Pin a tag (e.g. `v0.2.0`) for reproducible installs.
 (Registry publishing to crates.io / PyPI / npm is **planned** — the pipeline is
 wired in [`.github/workflows/release.yml`](.github/workflows/release.yml) and
 switches on per-registry when its token secret is added; until then those jobs
@@ -45,7 +45,7 @@ skip cleanly. See [`ROADMAP.md`](ROADMAP.md) for the plan and its triggers, and
 
 ```sh
 cargo install --git https://github.com/hylla-io/lagom lagom-cli
-# installs the `lagom` binary into ~/.cargo/bin; add e.g. --tag v0.1.2 to pin
+# installs the `lagom` binary into ~/.cargo/bin; add e.g. --tag v0.2.0 to pin
 ```
 
 Or from a clone:
@@ -68,7 +68,7 @@ Depend on the core (or any crate in the chain) as a git dependency:
 
 ```toml
 [dependencies]
-lagom-core = { git = "https://github.com/hylla-io/lagom", tag = "v0.1.2" }
+lagom-core = { git = "https://github.com/hylla-io/lagom", tag = "v0.2.0" }
 ```
 
 One caveat: crates.io **forbids git dependencies in published crates**, so if
@@ -214,10 +214,15 @@ rename = "read"   # expose under a different downstream name
 # Constrain `path` to a regex the agent cannot escape.
 [tools.read_file.args.path]
 pattern = "^src/"
+
+# Forbid `follow_links`: it leaves the schema, and a call that sends it is
+# refused by name. Works even when the upstream never declared the argument.
+[tools.read_file.args.follow_links]
+forbid = true
 ```
 
-Per argument, exactly one of `pin`, `default`, `enum`, `min`/`max`, or `pattern`
-applies. A JSON Schema for `lagom.toml` is produced by `lagom_config::json_schema`
+Per argument, exactly one of `pin`, `default`, `enum`, `min`/`max`, `pattern`,
+or `forbid` applies. A JSON Schema for `lagom.toml` is produced by `lagom_config::json_schema`
 for editor validation.
 
 Validate the policy against the live upstream before serving — drift (a vanished
@@ -362,6 +367,30 @@ Practical checklist for an invisible integration:
 `lagom.toml` is **only** for people running the standalone `lagom` CLI. An app
 embedding a binding does not use `lagom.toml`; it builds the `Policy` in code or
 from its own branded config (`docs/SAND_LAGOM_HANDOFF.md` §3).
+
+### Store policies with your own settings
+
+lagom holds no database and needs no file. Keep policies wherever your app keeps
+its settings — a database row, a config service — as a **policy document**:
+
+```json
+{ "lagom_policy": 1, "default_presence": "drop", "tools": { "search": { "presence": "keep" } } }
+```
+
+- `policy_from_document(text)` reads one; `policy_to_document(policy)` writes one
+  (`lagom_core::document` in Rust; `PolicyFromDocument`/`PolicyToDocument` in Go).
+- Stricter than a bare policy: the format key is read first, `default_presence`
+  is required, and unknown keys are refused — so a stored sealed ceiling can
+  never silently turn into passthrough.
+- A repeated key is refused and named, at any depth: a plain JSON read keeps
+  only the last value and could drop a `forbid`. Pass the text; in Rust that is
+  `document::parse`, not `document::from_value`.
+- `policy_to_document` refuses a policy with no `default_presence`.
+- A JSON Schema ships as `lagom_core::policy_document_schema()`.
+- Already keep TOML? `lagom_config::parse_str(text)` lowers it with no file.
+
+For a spawned server, mint from the stored document and hand `lagom refire
+--record` the one generated record; refire never discovers config.
 
 ---
 

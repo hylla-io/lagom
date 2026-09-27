@@ -51,6 +51,13 @@ A `Policy` over an upstream is, per tool:
   - **pin** `value` — remove from schema, inject on every call.
   - **constrain** — `enum` subset | numeric range | regex pattern.
   - **default** `value` — supply if absent (stays visible, unlike pin).
+  - **forbid** — the argument must be absent: removed from the schema, and a
+    call carrying it is rejected. Valid on an argument the upstream does not
+    declare, so a host can prove a tool never receives it. Matches the
+    **exact** argument name, as every argument rule does: `Version_Pin` or
+    `version_pin ` is a different argument and passes through. The guarantee
+    therefore holds for an upstream that matches argument names exactly; one
+    that folds case or trims names must forbid each spelling it accepts.
   - **passthrough** — unchanged (default).
 
 Engine API (shape, not signatures):
@@ -69,6 +76,9 @@ and *prevent* invalid calls structurally (the agent cannot form a call it cannot
 make, killing the call→fail→retry loop):
 
 - **pin** → delete property from `properties` + `required`.
+- **forbid** → delete a declared property from `properties` + `required`; a
+  call that still carries the argument (any value, `null` included) is rejected
+  by name, never stripped.
 - **constrain (set)** → set `enum: [...]`.
 - **constrain (range/pattern)** → `minimum`/`maximum`/`pattern`.
 - **drop** → omit tool from `tools/list`.
@@ -94,14 +104,15 @@ Never: runtime LLM rewriting (breaks refire determinism) or regex prose surgery
 
 ## 5. Guarantees & invariants
 
-- **5.1 Call-contract guarantee**: a param may be removed from the projected
-  schema **only if** lagom supplies its value (pin/default). Hide-without-value
-  is rejected at projection build time. The upstream always receives a valid
-  call.
+- **5.1 Call-contract guarantee**: a required param may be removed from the
+  projected schema **only if** lagom supplies its value (pin). `forbid` on an
+  argument the upstream marks `required` is drift (§5.3). The upstream always
+  receives a valid call.
 - **5.2 Monotonic narrowing (sealed bounds)**: `merge(base, overlay)` lets the
-  overlay (end-user) only **narrow** — drop, tighten, pin. Any widening (re-add
-  a dropped tool, loosen a constraint, unpin) is a **load-time error**, not a
-  silent ignore. This merge *is* the sandbox enforcement.
+  overlay (end-user) only **narrow** — drop, tighten, pin, forbid. Any widening
+  (re-add a dropped tool, loosen a constraint, unpin, un-forbid, or forbid a
+  pinned argument) is a **load-time error**, not a silent ignore. This merge
+  *is* the sandbox enforcement.
 - **5.3 Drift safety**: `validate` checks every policy reference against the live
   upstream `tools/list` at startup/mint. A vanished param/tool → **fail loud**,
   refuse to serve. No silent broken forwarding.
@@ -115,7 +126,8 @@ Never: runtime LLM rewriting (breaks refire determinism) or regex prose surgery
   (integrators; type-safe; home of dynamic mint-time scoping) and **`lagom.toml`**
   (CLI face + end-user narrowing). Both produce `Policy`; they cannot drift.
 - **6.2 Format**: TOML, branded `lagom.toml`. Carries only the flat human
-  surface (which tools, which args pinned/constrained, description overrides).
+  surface (which tools, which args pinned/constrained/forbidden, description
+  overrides).
   Rich transforms live in the builder. A JSON Schema for `lagom.toml` ships for
   editor validation.
 - **6.3 Layering + discovery**: integrator base profile (by name/path) ←
@@ -126,6 +138,25 @@ Never: runtime LLM rewriting (breaks refire determinism) or regex prose surgery
   profiles for apps shipping many.
 - **6.5 Harness integration**: lagom **never edits** `.mcp.json`/`settings.json`.
   `lagom emit` prints the exact stdio-server snippet to paste into any harness.
+- **6.6 Policy from the host**: lagom holds no database and needs no file. A
+  host keeps policies with its own settings and hands them over as a **policy
+  document** — strict, versioned JSON (`lagom_core::document`, and
+  `policy_from_document`/`policy_to_document` on every binding):
+  `{"lagom_policy": 1, "default_presence": "drop", "tools": {…}}`. The format
+  key is read first, so a newer format fails by name; `default_presence` is
+  required, so a stored sealed ceiling can never silently become passthrough;
+  unknown keys are refused; a key repeated in any object, at any depth, is
+  refused with its JSON Pointer, since a plain JSON read keeps only the last
+  value and could drop a `forbid` or a seal. Writing a document refuses a
+  policy with no `default_presence` rather than store an assumed `keep`.
+  Only text is checked for repeats: `document::from_value` takes a value a JSON
+  reader has already merged, so a host holding text calls `document::parse`.
+  A JSON Schema ships (`policy_document_schema`).
+  `lagom_config::parse_str` lowers `lagom.toml` text a host keeps anywhere.
+  For a spawned server, the host mints and writes the one generated record
+  `lagom refire --record` reads — config discovery never runs there.
+  `lagom_core::VERSION` lets a host check the binary it launches against the
+  library it linked.
 
 ## 7. Faces in detail
 
