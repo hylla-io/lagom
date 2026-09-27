@@ -23,10 +23,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 lagom-core = { path = "../lagom-core" }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "=1.0.229", features = ["derive"] }
 # raw_value: the document envelopes hand lagom-core the original text, so a
 # repeated key is still there to refuse.
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = { version = "=1.0.151", features = ["raw_value"] }
 
 [profile.release]
 # Keep the embedded .wasm small: the Go module `go:embed`s it, so every byte

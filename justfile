@@ -116,7 +116,7 @@ go-test:
 # Exact version, kept equal to package-lock.json: `bunx` ignores the lockfile, so
 # a floating `@3` would run whatever was published minutes ago (72-hour rule).
 node-build:
-    cd crates/lagom-node && bunx @napi-rs/cli@3.10.3 build --platform --release --manifest-path Cargo.toml
+    cd crates/lagom-node && bunx @napi-rs/cli@3.10.5 build --platform --release --manifest-path Cargo.toml
 
 # Build the Node binding then run its smoke test (mirrors `just py`): import the
 # addon from Node and assert project() drops a tool + pins/hides an arg and
