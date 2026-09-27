@@ -14,8 +14,8 @@ path = "main.rs"
 
 [dependencies]
 lagom-core = { path = "../../../crates/lagom-core" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 
 # Standalone crate: an empty [workspace] table detaches it from the root cargo
 # workspace so the parity guard never alters the shipped workspace membership.

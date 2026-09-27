@@ -15,6 +15,6 @@ name = "lagom-parity-compare"
 path = "main.rs"
 
 [dependencies]
-serde_json = "1"
+serde_json = "=1.0.151"
 
 [workspace]
