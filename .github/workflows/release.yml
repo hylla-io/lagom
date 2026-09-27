@@ -142,7 +142,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
       - name: napi build (${{ matrix.target }})
-        run: bunx @napi-rs/cli@3.10.3 build --platform --release --target ${{ matrix.target }} --manifest-path Cargo.toml
+        run: bunx @napi-rs/cli@3.10.5 build --platform --release --target ${{ matrix.target }} --manifest-path Cargo.toml
       - uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ matrix.target }}
@@ -181,7 +181,7 @@ jobs:
           version: 10
       - name: create platform npm dirs
         if: steps.token.outputs.present == 'true'
-        run: bunx @napi-rs/cli@3.10.3 create-npm-dirs
+        run: bunx @napi-rs/cli@3.10.5 create-npm-dirs
       - uses: actions/download-artifact@v8
         if: steps.token.outputs.present == 'true'
         with:
@@ -190,7 +190,7 @@ jobs:
           path: crates/lagom-node/artifacts
       - name: move .node binaries into npm dirs
         if: steps.token.outputs.present == 'true'
-        run: bunx @napi-rs/cli@3.10.3 artifacts
+        run: bunx @napi-rs/cli@3.10.5 artifacts
       - name: publish platform packages + root
         if: steps.token.outputs.present == 'true'
         run: |
