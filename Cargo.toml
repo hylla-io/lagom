@@ -31,15 +31,18 @@ lagom-core = { path = "crates/lagom-core", version = "0.2.0" }
 lagom-config = { path = "crates/lagom-config", version = "0.2.0" }
 lagom-audit = { path = "crates/lagom-audit", version = "0.2.0" }
 lagom-proxy = { path = "crates/lagom-proxy", version = "0.2.0" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-regex = "1"
-toml = "1.1"
-thiserror = "2"
-tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"] }
+# Minimum versions, not pins: the library crates publish these requirements to
+# their consumers, and an exact pin would override a consumer's own choice.
+# Cargo.lock under `--locked` fixes what lagom builds. End products (CLI,
+# bindings, parity runners) pin exactly in their own manifests.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+regex = "1.13.1"
+toml = "1.1.6"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
 # 0.29+ required: fixes two RustSec advisories exposed in earlier lines.
-pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py39"] }
 
 # Dev-build debuginfo trim (Cargo build-performance guide): line-tables-only keeps
 # file:line backtraces, deps get none; full-debug opt-in via --profile debugging.
