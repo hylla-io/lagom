@@ -6,6 +6,16 @@ All notable changes to lagom. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Upstream notifications at startup reach the harness.** Lines the upstream
+  sends during lagom's drift probe, or before the harness sends
+  `notifications/initialized` (e.g. Claude Code `notifications/claude/channel`),
+  are held and then forwarded in order. They were dropped.
+  - Responses are not held, so the harness's `initialize` answer is not delayed.
+  - The hold is capped at 1024 lines. Hitting the cap fails loudly: the probe
+    errors, or the session ends with a stderr message.
+
 ## [0.2.0] — unreleased
 
 A host can keep lagom's policies with its own settings, and a policy can
