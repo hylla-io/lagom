@@ -70,8 +70,8 @@ pub struct TomlToolPolicy {
     pub args: BTreeMap<String, TomlArgPolicy>,
 }
 
-/// The flat per-argument surface: pin a value, constrain a domain, or supply a
-/// default. Mutually exclusive — exactly one should be set.
+/// The flat per-argument surface: pin a value, constrain a domain, supply a
+/// default, or forbid the argument. Mutually exclusive — exactly one is set.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct TomlArgPolicy {
@@ -94,6 +94,10 @@ pub struct TomlArgPolicy {
     /// Constrain a string argument to this regular expression.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
+    /// `true`: the argument must be absent; a call carrying it is refused.
+    /// `false` sets nothing and is refused rather than read as "allowed".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forbid: Option<bool>,
 }
 
 impl TomlPolicy {
@@ -153,10 +157,16 @@ impl TomlArgPolicy {
     /// Lower one argument's flat surface into a core [`ArgPolicy`].
     ///
     /// Exactly one transform may be set. `pin`, `default`, `enum`, a `min`/`max`
-    /// range, and `pattern` are mutually exclusive; setting more than one (or, in
-    /// the case of the empty table, none) is a [`LowerError`]. `tool`/`arg` name
-    /// the location for error context.
+    /// range, `pattern`, and `forbid` are mutually exclusive; setting more than
+    /// one (or, in the case of the empty table, none) is a [`LowerError`].
+    /// `tool`/`arg` name the location for error context.
     fn into_arg_policy(self, tool: &str, arg: &str) -> Result<ArgPolicy, LowerError> {
+        if self.forbid == Some(false) {
+            return Err(LowerError::new(format!(
+                "argument `{arg}` of tool `{tool}` sets `forbid = false`, which sets \
+                 nothing; remove it or write `forbid = true`"
+            )));
+        }
         // Count which transform families are present. `min`/`max` together count
         // as the single `range` constraint.
         let has_pin = self.pin.is_some();
@@ -164,25 +174,36 @@ impl TomlArgPolicy {
         let has_enum = self.r#enum.is_some();
         let has_range = self.min.is_some() || self.max.is_some();
         let has_pattern = self.pattern.is_some();
+        let has_forbid = self.forbid == Some(true);
 
-        let set = [has_pin, has_default, has_enum, has_range, has_pattern]
-            .iter()
-            .filter(|b| **b)
-            .count();
+        let set = [
+            has_pin,
+            has_default,
+            has_enum,
+            has_range,
+            has_pattern,
+            has_forbid,
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count();
 
         if set == 0 {
             return Err(LowerError::new(format!(
                 "argument `{arg}` of tool `{tool}` sets no transform; \
-                 specify exactly one of pin, default, enum, min/max, pattern"
+                 specify exactly one of pin, default, enum, min/max, pattern, forbid"
             )));
         }
         if set > 1 {
             return Err(LowerError::new(format!(
                 "argument `{arg}` of tool `{tool}` sets multiple mutually-exclusive \
-                 transforms; specify exactly one of pin, default, enum, min/max, pattern"
+                 transforms; specify exactly one of pin, default, enum, min/max, pattern, forbid"
             )));
         }
 
+        if has_forbid {
+            return Ok(ArgPolicy::Forbid);
+        }
         if let Some(v) = self.pin {
             return Ok(ArgPolicy::Pin(v));
         }
@@ -295,6 +316,7 @@ max = 5.0"#,
                 r#"pattern = "^a.*""#,
                 ArgPolicy::Constrain(Constraint::Pattern("^a.*".to_string())),
             ),
+            (r#"forbid = true"#, ArgPolicy::Forbid),
         ];
         for (body, expected) in cases {
             let src = format!("[tools.t.args.x]\n{body}\n");
@@ -313,6 +335,18 @@ max = 5.0"#,
     fn arg_with_conflicting_transforms_is_rejected() {
         let src = "[tools.t.args.x]\npin = \"a\"\ndefault = \"b\"\n";
         let err = lower(src).unwrap_err();
+        assert!(err.0.contains("mutually-exclusive"), "{}", err.0);
+    }
+
+    #[test]
+    fn forbid_false_is_rejected_not_read_as_allowed() {
+        let err = lower("[tools.t.args.x]\nforbid = false\n").unwrap_err();
+        assert!(err.0.contains("forbid = false"), "{}", err.0);
+    }
+
+    #[test]
+    fn forbid_with_another_transform_is_rejected() {
+        let err = lower("[tools.t.args.x]\nforbid = true\npin = 1\n").unwrap_err();
         assert!(err.0.contains("mutually-exclusive"), "{}", err.0);
     }
 

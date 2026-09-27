@@ -69,6 +69,13 @@ def run_case(case, by_name, upstream_json):
             else:
                 record = mint_record(by_name[case["mint_of"]])
             return ok(lagom.refire(record))
+        if op == "policy_from_document":
+            # `*_text` is verbatim: a repeated key survives only as text.
+            text = case.get("document_text") or json.dumps(case["document"])
+            return ok(lagom.policy_from_document(text))
+        if op == "policy_to_document":
+            text = case.get("policy_text") or json.dumps(case["policy"])
+            return ok(lagom.policy_to_document(text))
     except ValueError:
         return {"status": "err", "payload": None}
     raise SystemExit(f"unknown op {op!r}")

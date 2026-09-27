@@ -86,11 +86,13 @@ py-test:
 # remapped by rustc to /rustc/<hash>/. It does NOT promise the blob is free of
 # every possible machine-specific string — verify with:
 #   strings -a go/internal/wasmbin/lagom.wasm | rg -c "$HOME|$(whoami)"   # expect 0
+# The copy reads from `$CARGO_TARGET_DIR` when it is set, so a build dir outside
+# the checkout works; unset, it is the crate's own `target/`.
 wasm:
     RUSTC="$(rustup which --toolchain stable rustc)" \
     RUSTFLAGS="--remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}/=/rustup/ --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry/src/=/cargo-registry/ --remap-path-prefix=$(pwd)/=/lagom/ --remap-path-prefix=$(rustup run stable rustc --print sysroot)/lib/rustlib/src/rust/=/rust-std/ --remap-path-prefix=$(rustup run stable rustc --print sysroot)/=/rust-sysroot/" \
     rustup run stable cargo build --release --target wasm32-unknown-unknown -p lagom-wasm --manifest-path crates/lagom-wasm/Cargo.toml
-    cp crates/lagom-wasm/target/wasm32-unknown-unknown/release/lagom_wasm.wasm go/internal/wasmbin/lagom.wasm
+    cp "${CARGO_TARGET_DIR:-crates/lagom-wasm/target}/wasm32-unknown-unknown/release/lagom_wasm.wasm" go/internal/wasmbin/lagom.wasm
     @strings -a go/internal/wasmbin/lagom.wasm | rg -q "$HOME|$(whoami)" && { echo "FAIL: build-machine paths leaked into lagom.wasm"; exit 1; } || echo "wasm: no build-machine paths in blob"
 
 # Test the Go binding in-process via wazero (pure Go, no cgo). Proves project()

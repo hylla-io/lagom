@@ -4,7 +4,7 @@
 //! deliberate, stable contract independent of internal serde shape churn. It
 //! mirrors [`crate::TomlPolicy`] exactly: `default-presence`, per-tool
 //! `presence`/`rename`/`description`/`args`, and the mutually-exclusive
-//! per-argument `pin`/`default`/`enum`/`min`/`max`/`pattern`.
+//! per-argument `pin`/`default`/`enum`/`min`/`max`/`pattern`/`forbid`.
 //!
 //! A round-trip test asserts every key the schema names round-trips through the
 //! real [`crate::TomlPolicy`] deserializer, so the schema cannot silently drift
@@ -92,6 +92,10 @@ pub fn json_schema() -> Value {
                     "pattern": {
                         "description": "Constrain a string argument to this regular expression.",
                         "type": "string"
+                    },
+                    "forbid": {
+                        "description": "The argument must be absent; a call carrying it is refused.",
+                        "const": true
                     }
                 },
                 "oneOf": [
@@ -105,7 +109,8 @@ pub fn json_schema() -> Value {
                             { "required": ["max"] }
                         ]
                     },
-                    { "required": ["pattern"] }
+                    { "required": ["pattern"] },
+                    { "required": ["forbid"] }
                 ]
             }
         }
@@ -157,10 +162,18 @@ enum = ["doc", "code"]
 
 [tools.search.args.name]
 pattern = "^[a-z]+$"
+
+[tools.search.args.version]
+forbid = true
 "#;
         let parsed: TomlPolicy = toml::from_str(src).expect("model accepts schema's keys");
         assert_eq!(parsed.default_presence.as_deref(), Some("drop"));
         assert!(parsed.tools.contains_key("search"));
+        let policy = parsed.into_policy().expect("schema's example lowers");
+        assert_eq!(
+            policy.tools["search"].args["version"],
+            lagom_core::ArgPolicy::Forbid
+        );
     }
 
     /// Minimal evaluator for the subset of JSON-Schema keywords the `arg`
@@ -209,6 +222,7 @@ pattern = "^[a-z]+$"
         assert_eq!(matching_branches(&json!({"default": "x"})), 1);
         assert_eq!(matching_branches(&json!({"enum": ["a"]})), 1);
         assert_eq!(matching_branches(&json!({"pattern": "^x$"})), 1);
+        assert_eq!(matching_branches(&json!({"forbid": true})), 1);
     }
 
     #[test]

@@ -66,6 +66,8 @@ type Engine struct {
 	valid   api.Function
 	mint    api.Function
 	refire  api.Function
+	fromDoc api.Function
+	toDoc   api.Function
 }
 
 // New instantiates the embedded lagom-core wasm module in a fresh wazero
@@ -90,11 +92,14 @@ func New(ctx context.Context) (*Engine, error) {
 		valid:   mod.ExportedFunction("validate"),
 		mint:    mod.ExportedFunction("mint"),
 		refire:  mod.ExportedFunction("refire"),
+		fromDoc: mod.ExportedFunction("policy_from_document"),
+		toDoc:   mod.ExportedFunction("policy_to_document"),
 	}
 	for name, fn := range map[string]api.Function{
 		"alloc": e.alloc, "dealloc": e.dealloc, "project": e.project,
 		"rewrite": e.rewrite, "merge": e.merge, "validate": e.valid,
 		"mint": e.mint, "refire": e.refire,
+		"policy_from_document": e.fromDoc, "policy_to_document": e.toDoc,
 	} {
 		if fn == nil {
 			_ = runtime.Close(ctx)
@@ -276,6 +281,37 @@ func (e *Engine) Refire(ctx context.Context, recordJSON []byte) ([]byte, error) 
 	return e.call(ctx, e.refire, "refire", in)
 }
 
+// --- Policy documents: the form a host stores (SPEC.md §6.6) ---
+
+// PolicyFromDocument reads a stored policy document and returns the Policy as
+// JSON. The document is strict and versioned: `lagom_policy` (the format) and
+// `default_presence` are required and an unknown or repeated key is refused, so
+// a stored ceiling can never silently become passthrough. The bytes reach the
+// engine as given, so a repeated key is still there to refuse. A refused
+// document returns an error.
+func (e *Engine) PolicyFromDocument(ctx context.Context, documentJSON []byte) ([]byte, error) {
+	in, err := envelope(map[string]json.RawMessage{
+		"document": rawOrNull(documentJSON),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lagom: policy_from_document: %w", err)
+	}
+	return e.call(ctx, e.fromDoc, "policy_from_document", in)
+}
+
+// PolicyToDocument returns a Policy in its stored form. The same policy always
+// yields the same bytes. A policy with no default_presence, a repeated key, or
+// a malformed rule returns an error; lagom never stores an assumed keep.
+func (e *Engine) PolicyToDocument(ctx context.Context, policyJSON []byte) ([]byte, error) {
+	in, err := envelope(map[string]json.RawMessage{
+		"policy": rawOrNull(policyJSON),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lagom: policy_to_document: %w", err)
+	}
+	return e.call(ctx, e.toDoc, "policy_to_document", in)
+}
+
 // --- Guard: the brandable one-call helper (SPEC.md §2, §7.2) ---
 
 // Guard is the ergonomic one-call helper an app wires a slim, branded MCP
@@ -439,4 +475,24 @@ func Refire(ctx context.Context, recordJSON []byte) ([]byte, error) {
 		return nil, err
 	}
 	return e.Refire(ctx, recordJSON)
+}
+
+// PolicyFromDocument reads a stored policy document using the shared Engine. See
+// Engine.PolicyFromDocument.
+func PolicyFromDocument(ctx context.Context, documentJSON []byte) ([]byte, error) {
+	e, err := shared(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return e.PolicyFromDocument(ctx, documentJSON)
+}
+
+// PolicyToDocument returns a policy's stored form using the shared Engine. See
+// Engine.PolicyToDocument.
+func PolicyToDocument(ctx context.Context, policyJSON []byte) ([]byte, error) {
+	e, err := shared(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return e.PolicyToDocument(ctx, policyJSON)
 }

@@ -3,7 +3,7 @@
 //! process stdio (`SPEC.md` §7.1, §10). The in-repo Rust fixture already covers
 //! the bridge; this covers a server lagom does not control — different runtime,
 //! different framing habits — and proves the full sandbox story an external
-//! consumer sees: drop, rename, pin injection, rejection annotation, and the
+//! consumer sees: drop, rename, pin injection, forbid, rejection annotation, and the
 //! refuse-to-forward-unparsed-bytes guarantee.
 //!
 //! Requires `node` on PATH, so it is `#[ignore]`d from the plain `just ci`
@@ -49,6 +49,8 @@ fn cli_projects_a_real_node_mcp_server_end_to_end() {
             "rename = \"say\"\n",
             "[tools.echo.args.token]\n",
             "pin = \"pinned-secret\"\n",
+            "[tools.echo.args.version_pin]\n",
+            "forbid = true\n",
         ),
     )
     .unwrap();
@@ -165,6 +167,24 @@ fn cli_projects_a_real_node_mcp_server_end_to_end() {
             .as_str()
             .is_some_and(|m| m.contains("rejected by lagom")),
         "dropped tool call is rejected annotated: {rejected}"
+    );
+
+    // 3b. A forbidden argument the upstream never declared: the call is refused
+    //     by name and never reaches the node server.
+    send(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc":"2.0","id":5,"method":"tools/call",
+            "params": {"name":"say","arguments":{"message":"hi","version_pin":3}}
+        }),
+    );
+    let forbidden = recv(&mut stdout);
+    assert_eq!(forbidden["id"], serde_json::json!(5));
+    assert!(
+        forbidden["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("rejected by lagom") && m.contains("version_pin")),
+        "forbidden argument is refused by name: {forbidden}"
     );
 
     // 4. Unparseable bytes are refused, never forwarded (parser-differential

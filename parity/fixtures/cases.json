@@ -289,6 +289,176 @@
           "upstream": { "command": "srv", "args": ["--sealed"], "env": [] }
         }
       }
+    },
+    {
+      "_note": "Forbid on a declared argument removes it from the schema and names it in the addendum; forbid on an undeclared one changes nothing visible.",
+      "name": "project_forbid_declared_and_undeclared",
+      "op": "project",
+      "expect": "ok",
+      "policy": {
+        "default_presence": "drop",
+        "tools": {
+          "search": { "presence": "keep", "args": { "limit": "forbid", "version_pin": "forbid" } }
+        }
+      }
+    },
+    {
+      "name": "rewrite_forbid_refuses_a_carrying_call",
+      "op": "rewrite",
+      "expect": "err",
+      "call": { "name": "search", "arguments": { "artifact": "x", "query": "a", "version_pin": 3 } },
+      "policy": { "tools": { "search": { "args": { "version_pin": "forbid" } } } }
+    },
+    {
+      "_note": "DISCRIMINATION CONTROL for the case above: the same call without the forbidden argument is forwarded unchanged.",
+      "name": "rewrite_forbid_absent_is_forwarded",
+      "op": "rewrite",
+      "expect": "ok",
+      "call": { "name": "search", "arguments": { "artifact": "x", "query": "a" } },
+      "policy": { "tools": { "search": { "args": { "version_pin": "forbid" } } } }
+    },
+    {
+      "name": "merge_constrain_to_forbid_narrows",
+      "op": "merge",
+      "expect": "ok",
+      "base": { "tools": { "search": { "args": { "limit": { "constrain": { "range": { "max": 5.0 } } } } } } },
+      "overlay": { "tools": { "search": { "args": { "limit": "forbid" } } } }
+    },
+    {
+      "name": "merge_forbid_to_passthrough_widens",
+      "op": "merge",
+      "expect": "err",
+      "base": { "tools": { "search": { "args": { "limit": "forbid" } } } },
+      "overlay": { "tools": { "search": { "args": { "limit": "passthrough" } } } }
+    },
+    {
+      "name": "merge_pin_to_forbid_widens",
+      "op": "merge",
+      "expect": "err",
+      "base": { "tools": { "search": { "args": { "artifact": { "pin": "hylla" } } } } },
+      "overlay": { "tools": { "search": { "args": { "artifact": "forbid" } } } }
+    },
+    {
+      "name": "validate_forbid_on_an_undeclared_arg_is_grounded",
+      "op": "validate",
+      "expect": "ok",
+      "policy": { "tools": { "search": { "args": { "version_pin": "forbid" } } } }
+    },
+    {
+      "name": "validate_forbid_on_a_required_arg_is_drift",
+      "op": "validate",
+      "expect": "err",
+      "policy": { "tools": { "search": { "args": { "artifact": "forbid" } } } }
+    },
+    {
+      "name": "mint_forbid_overlay_narrows",
+      "op": "mint",
+      "expect": "ok",
+      "run_id": "agent-f",
+      "base": { "default_presence": "drop", "tools": { "search": { "presence": "keep" } } },
+      "dynamic": { "default_presence": "drop", "tools": { "search": { "args": { "version_pin": "forbid" } } } },
+      "upstream_command": { "command": "srv", "args": [], "env": [] }
+    },
+    {
+      "name": "policy_to_document_every_rule",
+      "op": "policy_to_document",
+      "expect": "ok",
+      "policy": {
+        "default_presence": "drop",
+        "tools": {
+          "search": {
+            "presence": "keep",
+            "rename": "find",
+            "description": { "override": "Find." },
+            "args": {
+              "artifact": { "pin": "hylla" },
+              "query": { "constrain": { "pattern": "^a" } },
+              "limit": { "default": 10 },
+              "version_pin": "forbid"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "policy_from_document_ok",
+      "op": "policy_from_document",
+      "expect": "ok",
+      "document": {
+        "lagom_policy": 1,
+        "default_presence": "drop",
+        "tools": { "search": { "presence": "keep", "args": { "version_pin": "forbid" } } }
+      }
+    },
+    {
+      "_note": "A stored ceiling that lost default_presence must be refused; the bare Policy shape would read it as keep (passthrough).",
+      "name": "policy_from_document_missing_presence_refused",
+      "op": "policy_from_document",
+      "expect": "err",
+      "document": { "lagom_policy": 1, "tools": {} }
+    },
+    {
+      "name": "policy_from_document_future_format_refused",
+      "op": "policy_from_document",
+      "expect": "err",
+      "document": { "lagom_policy": 2, "default_presence": "drop" }
+    },
+    {
+      "name": "policy_from_document_missing_format_refused",
+      "op": "policy_from_document",
+      "expect": "err",
+      "document": { "default_presence": "drop" }
+    },
+    {
+      "_note": "Control for the *_text cases below: verbatim text with no repeat reads like the object form.",
+      "name": "policy_from_document_text_ok",
+      "op": "policy_from_document",
+      "expect": "ok",
+      "document_text": "{\"lagom_policy\":1,\"default_presence\":\"drop\",\"tools\":{\"search\":{\"presence\":\"keep\",\"args\":{\"version_pin\":\"forbid\"}}}}"
+    },
+    {
+      "_note": "A repeated key must be refused at every level; a last-wins read would unseal or drop the forbid. Carried as text because a JSON loader merges repeats.",
+      "name": "policy_from_document_repeated_default_presence_refused",
+      "op": "policy_from_document",
+      "expect": "err",
+      "document_text": "{\"lagom_policy\":1,\"default_presence\":\"drop\",\"default_presence\":\"keep\"}"
+    },
+    {
+      "name": "policy_from_document_repeated_format_refused",
+      "op": "policy_from_document",
+      "expect": "err",
+      "document_text": "{\"lagom_policy\":2,\"lagom_policy\":1,\"default_presence\":\"drop\"}"
+    },
+    {
+      "name": "policy_from_document_repeated_tool_refused",
+      "op": "policy_from_document",
+      "expect": "err",
+      "document_text": "{\"lagom_policy\":1,\"default_presence\":\"keep\",\"tools\":{\"s\":{\"presence\":\"drop\"},\"s\":{\"presence\":\"keep\"}}}"
+    },
+    {
+      "name": "policy_from_document_repeated_presence_refused",
+      "op": "policy_from_document",
+      "expect": "err",
+      "document_text": "{\"lagom_policy\":1,\"default_presence\":\"keep\",\"tools\":{\"s\":{\"presence\":\"drop\",\"presence\":\"keep\"}}}"
+    },
+    {
+      "name": "policy_from_document_repeated_arg_refused",
+      "op": "policy_from_document",
+      "expect": "err",
+      "document_text": "{\"lagom_policy\":1,\"default_presence\":\"keep\",\"tools\":{\"s\":{\"args\":{\"v\":\"forbid\",\"v\":\"passthrough\"}}}}"
+    },
+    {
+      "_note": "A bare policy defaults a missing default_presence to keep; storing it must refuse rather than write an assumed keep.",
+      "name": "policy_to_document_missing_presence_refused",
+      "op": "policy_to_document",
+      "expect": "err",
+      "policy": { "tools": {} }
+    },
+    {
+      "name": "policy_to_document_repeated_key_refused",
+      "op": "policy_to_document",
+      "expect": "err",
+      "policy_text": "{\"default_presence\":\"drop\",\"tools\":{\"s\":{\"args\":{\"v\":\"forbid\",\"v\":\"passthrough\"}}}}"
     }
   ]
 }

@@ -313,6 +313,7 @@ const TOOL_KEYS: [&str; 4] = ["presence", "rename", "description", "args"];
 /// - a tool's `presence = "drop"` → that tool vanishes. Restricts.
 /// - an arg `pin` → the arg leaves the schema, lagom fixes the value. Restricts.
 /// - an arg `constrain` (enum / range / pattern) → narrower domain. Restricts.
+/// - an arg `forbid` → a call carrying the arg is refused. Restricts.
 /// - `rename` → a different downstream *name* for the same authority; every tool
 ///   stays callable with every argument. Does NOT restrict.
 /// - `description` (Tier-1 override, §4.2) → fewer tokens, identical authority.
@@ -383,12 +384,16 @@ fn tool_restricts(tool: &serde_json::Value) -> bool {
     }
 }
 
-/// Per-argument half of [`policy_restricts`]: `pin` and `constrain` restrict,
-/// `default` and `passthrough` do not, anything else is unrecognised.
+/// Per-argument half of [`policy_restricts`]: `pin`, `constrain` and `forbid`
+/// restrict, `default` and `passthrough` do not, anything else is unrecognised.
 fn arg_restricts(arg: &serde_json::Value) -> bool {
     match arg {
-        // The unit variant `ArgPolicy::Passthrough`.
-        serde_json::Value::String(tag) => tag != "passthrough",
+        // The unit variants `ArgPolicy::Passthrough` and `ArgPolicy::Forbid`.
+        serde_json::Value::String(tag) => match tag.as_str() {
+            "passthrough" => false,
+            "forbid" => true,
+            _ => true,
+        },
         // Externally-tagged newtype variants: exactly one key.
         serde_json::Value::Object(map) if map.len() == 1 => {
             match map.keys().next().map(String::as_str) {
@@ -1258,6 +1263,10 @@ mod tests {
                 tool_policy(
                     serde_json::json!({ "args": { "n": { "constrain": { "range": { "max": 5.0 } } } } }),
                 ),
+            ),
+            (
+                "arg forbid",
+                tool_policy(serde_json::json!({ "args": { "version_pin": "forbid" } })),
             ),
             (
                 "one gating arg among non-gating ones",

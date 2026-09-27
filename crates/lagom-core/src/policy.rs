@@ -87,6 +87,11 @@ pub enum ArgPolicy {
     Default(Value),
     /// Leave the argument unchanged.
     Passthrough,
+    /// The argument must be absent: removed from the projected schema, and a call
+    /// that carries it — any value, `null` included — is rejected by name, never
+    /// silently stripped (`SPEC.md` §4.1, §9.1). Valid on an argument the
+    /// upstream does not declare, so a host can prove a tool never receives it.
+    Forbid,
 }
 
 /// The rules lagom applies to one tool.
@@ -318,6 +323,18 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("unknown variant"), "{err}");
+    }
+
+    /// `Forbid` is a unit variant, so its wire spelling is the bare string, like
+    /// `passthrough` — the shape every binding and the CLI's `arg_restricts` read.
+    #[test]
+    fn forbid_wire_spelling_is_a_bare_string() {
+        assert_eq!(
+            serde_json::to_string(&ArgPolicy::Forbid).unwrap(),
+            r#""forbid""#
+        );
+        let parsed: ArgPolicy = serde_json::from_str(r#""forbid""#).unwrap();
+        assert_eq!(parsed, ArgPolicy::Forbid);
     }
 
     /// The guard must leave the legitimate two-bound range intact.

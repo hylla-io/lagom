@@ -9,7 +9,7 @@ description = "wasm32 face of lagom-core: project/rewrite/merge/validate over a 
 # (`cargo build --release --target wasm32-unknown-unknown -p lagom-wasm`).
 # Because it is excluded it cannot inherit `[workspace.package]`, so these are
 # set explicitly.
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/hylla-io/lagom"
@@ -24,7 +24,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 lagom-core = { path = "../lagom-core" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# raw_value: the document envelopes hand lagom-core the original text, so a
+# repeated key is still there to refuse.
+serde_json = { version = "1", features = ["raw_value"] }
 
 [profile.release]
 # Keep the embedded .wasm small: the Go module `go:embed`s it, so every byte

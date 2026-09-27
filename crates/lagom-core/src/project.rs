@@ -67,6 +67,15 @@ fn apply_arg_transforms(
                     restrictions.push(describe_constraint(arg, constraint));
                 }
             }
+            ArgPolicy::Forbid => {
+                // An undeclared argument has nothing to remove, and naming it in
+                // the addendum would advertise an argument the tool never had.
+                if property_mut(obj, arg).is_some() {
+                    remove_property(obj, arg);
+                    remove_required(obj, arg);
+                    restrictions.push(format!("`{arg}` is not accepted"));
+                }
+            }
             ArgPolicy::Passthrough => {}
         }
     }
@@ -243,6 +252,39 @@ mod tests {
                 .unwrap()
                 .contains("`artifact` is fixed")
         );
+    }
+
+    #[test]
+    fn forbid_removes_a_declared_arg_and_says_so() {
+        let mut args = BTreeMap::new();
+        args.insert("limit".to_string(), ArgPolicy::Forbid);
+        let tp = ToolPolicy {
+            args,
+            ..Default::default()
+        };
+        let out = project(&[tool("search")], &policy_with("search", tp));
+        assert!(out[0].input_schema["properties"].get("limit").is_none());
+        assert!(
+            out[0]
+                .description
+                .as_deref()
+                .unwrap()
+                .contains("`limit` is not accepted")
+        );
+    }
+
+    /// An undeclared forbidden argument changes nothing the agent sees: no
+    /// schema edit and no addendum naming an argument the tool never had.
+    #[test]
+    fn forbid_on_an_undeclared_arg_leaves_the_tool_unchanged() {
+        let mut args = BTreeMap::new();
+        args.insert("version_pin".to_string(), ArgPolicy::Forbid);
+        let tp = ToolPolicy {
+            args,
+            ..Default::default()
+        };
+        let out = project(&[tool("search")], &policy_with("search", tp));
+        assert_eq!(out[0], tool("search"));
     }
 
     #[test]

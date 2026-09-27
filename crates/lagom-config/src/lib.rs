@@ -6,12 +6,12 @@
 //! [`lagom_core::merge`].
 //!
 //! This crate carries *only* the flat human surface (which tools, which args
-//! pinned/constrained, description overrides) per `SPEC.md` §6.2; rich
+//! pinned/constrained/forbidden, description overrides) per `SPEC.md` §6.2; rich
 //! transforms remain the builder's job. The CLI face and end-user narrowing
 //! both go through here.
 //!
-//! These are compiling seams: the public signatures are final, the bodies are
-//! `todo!()` until the loader/discovery/builder slices land.
+//! Optional for a host: [`parse_str`] lowers TOML text it keeps anywhere, and a
+//! host that stores JSON uses `lagom_core::document` and never links this crate.
 
 // Every public item must be documented — the gate's `clippy -D warnings` turns
 // this into an error, upholding the NO-DRIFT docs-always-full invariant.
@@ -67,27 +67,48 @@ pub enum ConfigError {
     Merge(#[from] lagom_core::MergeError),
 }
 
+/// Why `lagom.toml` text could not become a [`Policy`]. Path-free: [`load`]
+/// adds the path.
+#[derive(Debug, Error)]
+pub enum ParseError {
+    /// Not valid TOML, or not the `lagom.toml` schema.
+    #[error("{0}")]
+    Toml(#[source] toml::de::Error),
+    /// Valid TOML describing a policy lagom cannot represent.
+    #[error("{0}")]
+    Lower(String),
+}
+
+/// Lower `lagom.toml` text into a [`Policy`]. Reads nothing: the host supplies
+/// the text from wherever it keeps it.
+pub fn parse_str(text: &str) -> Result<Policy, ParseError> {
+    let toml_policy: TomlPolicy = toml::from_str(text).map_err(ParseError::Toml)?;
+    toml_policy
+        .into_policy()
+        .map_err(|LowerError(message)| ParseError::Lower(message))
+}
+
 /// Load a single `lagom.toml` from `path` into a [`Policy`].
 ///
-/// Reads the file, deserializes it into [`TomlPolicy`], then lowers it into the
-/// canonical core [`Policy`]. No layering is performed here — see [`load_layered`]
-/// and [`load_discovered`] for base + overlay composition.
+/// Reads the file and lowers it through [`parse_str`]. No layering is performed
+/// here — see [`load_layered`] and [`load_discovered`] for base + overlay
+/// composition.
 pub fn load(path: impl AsRef<Path>) -> Result<Policy, ConfigError> {
     let path = path.as_ref();
     let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    let toml_policy: TomlPolicy = toml::from_str(&text).map_err(|source| ConfigError::Parse {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    toml_policy
-        .into_policy()
-        .map_err(|LowerError(message)| ConfigError::Lower {
+    parse_str(&text).map_err(|e| match e {
+        ParseError::Toml(source) => ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        },
+        ParseError::Lower(message) => ConfigError::Lower {
             path: path.to_path_buf(),
             message,
-        })
+        },
+    })
 }
 
 /// Load and compose a layered config: an integrator `base` narrowed by an
@@ -187,6 +208,26 @@ mod tests {
         let p = tmp.write("lagom.toml", "default-presence = \"drop\"\n");
         let policy = load(&p).unwrap();
         assert_eq!(policy.default_presence, Presence::Drop);
+    }
+
+    #[test]
+    fn parse_str_lowers_text_with_no_file() {
+        let policy =
+            parse_str("default-presence = \"drop\"\n[tools.s.args.v]\nforbid = true\n").unwrap();
+        assert_eq!(policy.default_presence, Presence::Drop);
+        assert_eq!(policy.tools["s"].args["v"], lagom_core::ArgPolicy::Forbid);
+    }
+
+    #[test]
+    fn parse_str_separates_toml_errors_from_lowering_errors() {
+        assert!(matches!(
+            parse_str("not = = valid"),
+            Err(ParseError::Toml(_))
+        ));
+        assert!(matches!(
+            parse_str("default-presence = \"allow\"\n"),
+            Err(ParseError::Lower(m)) if m.contains("unknown presence")
+        ));
     }
 
     #[test]

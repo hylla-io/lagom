@@ -128,6 +128,19 @@ resolved, err := lagom.Refire(ctx, record) // {"policy","upstream"} ready to ser
 The overlay may only **narrow** the base; any widening returns an error (the
 sandbox enforcement, `SPEC.md` §5.2).
 
+## Store policies with your own settings (`SPEC.md` §6.6)
+
+```go
+doc, err := lagom.PolicyToDocument(ctx, policyJSON)   // strict, versioned; store it anywhere
+policy, err := lagom.PolicyFromDocument(ctx, doc)     // refuses a missing default_presence
+```
+
+Both refuse a repeated key at any depth, and `PolicyToDocument` refuses a
+policy with no `default_presence`. The bytes reach the engine as given.
+
+`PolicyBuilder.Forbid(tool, arg)` makes an argument absent: a call carrying it
+returns an error.
+
 ## Branding (lagom invisible)
 
 An app embedding this binding picks its **own** server name, tool names

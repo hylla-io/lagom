@@ -92,6 +92,15 @@ pub fn rewrite(call: &ToolCall, policy: &Policy) -> Result<ToolCall, Reject> {
                         check_constraint(arg, value, constraint)?;
                     }
                 }
+                ArgPolicy::Forbid => {
+                    // Refused, not stripped: stripping would forward a call the
+                    // agent did not make (`SPEC.md` §9.1).
+                    if arguments.contains_key(arg) {
+                        return Err(Reject::new(format!(
+                            "argument `{arg}` is not accepted by this tool"
+                        )));
+                    }
+                }
                 ArgPolicy::Passthrough => {}
             }
         }
@@ -381,6 +390,35 @@ mod tests {
         );
         assert!(rewrite(&ToolCall::new("edit", json!({"path": "src/main.rs"})), &p).is_ok());
         assert!(rewrite(&ToolCall::new("edit", json!({"path": "/etc/passwd"})), &p).is_err());
+    }
+
+    fn forbidding(arg: &str) -> Policy {
+        let mut args = BTreeMap::new();
+        args.insert(arg.to_string(), ArgPolicy::Forbid);
+        policy_with(
+            "search",
+            ToolPolicy {
+                args,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn forbidden_arg_is_rejected_by_name_for_any_value() {
+        let p = forbidding("version_pin");
+        for value in [json!(7), json!("7"), json!(null), json!({})] {
+            let call = ToolCall::new("search", json!({"query": "x", "version_pin": value}));
+            let err = rewrite(&call, &p).expect_err("a forbidden argument must be refused");
+            assert!(err.message.contains("`version_pin`"), "{}", err.message);
+        }
+    }
+
+    #[test]
+    fn call_without_the_forbidden_arg_is_forwarded_unchanged() {
+        let p = forbidding("version_pin");
+        let out = rewrite(&ToolCall::new("search", json!({"query": "x"})), &p).unwrap();
+        assert_eq!(out.arguments, json!({"query": "x"}));
     }
 
     #[test]

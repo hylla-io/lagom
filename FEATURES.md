@@ -14,8 +14,23 @@ operations; compiles to native and (by construction) wasm. Done and green.
 
 - **`Policy` model** (SPEC §3) — the projection spec as data: per-tool presence
   (keep/drop), rename, description policy; per-arg pin / constrain / default /
-  passthrough. *Why:* a single model both front-ends produce and the only thing
+  forbid / passthrough. *Why:* a single model both front-ends produce and the only thing
   the engine consumes, so the typed builder and `lagom.toml` cannot drift.
+- **`forbid`** (0.2.0, SPEC §3, §4.1) — the argument must be absent: a declared
+  one leaves the schema, and a call carrying it is refused by name. Valid on an
+  argument the upstream does not declare; refused as drift on a `required`
+  one. Matches the exact argument name. *Why:* a host can prove a tool never
+  receives an argument — the one guarantee a pin cannot give when the tool has
+  no such argument to pin.
+- **Policy documents** (`lagom_core::document`, 0.2.0, SPEC §6.6) — the strict,
+  versioned JSON form a host stores: `lagom_policy` format key read first,
+  `default_presence` required, unknown keys refused, a key repeated at any
+  depth refused with its JSON Pointer (a last-wins read could drop a forbid),
+  writing a policy with no `default_presence` refused, a JSON Schema
+  (`policy_document_schema`), and `VERSION`. Exposed on every binding as
+  `policy_from_document`/`policy_to_document`. *Why:* lagom holds no database;
+  a host keeps policies with its own settings, and a stored sealed ceiling must
+  never silently become passthrough.
 - **Lenient `ToolDef` input (zero-shim consumption)** — deserialization accepts
   both the MCP-native camelCase `inputSchema` and snake `input_schema`, and
   normalizes a missing or JSON-`null` schema to `{}`; serialization always emits
@@ -35,8 +50,9 @@ operations; compiles to native and (by construction) wasm. Done and green.
   rejects constraint violations. *Why:* the upstream always receives a complete,
   valid call (SPEC §5.1 call-contract guarantee).
 - **`merge(base, overlay) -> Policy`** — **narrow-only** composition (SPEC §5.2).
-  The overlay may only drop / tighten / pin; any widening (re-add a dropped
-  tool, loosen a constraint, unpin) is a load-time `MergeError`. *Why:* this
+  The overlay may only drop / tighten / pin / forbid; any widening (re-add a
+  dropped tool, loosen a constraint, unpin, un-forbid, forbid a pinned
+  argument) is a load-time `MergeError`. *Why:* this
   merge **is** the sandbox — it makes integrator-authored sealed bounds a
   guarantee, not a suggestion.
 - **`validate(policy, upstream_defs) -> Ok | DriftError`** (SPEC §5.3) — checks
@@ -80,8 +96,9 @@ operations; compiles to native and (by construction) wasm. Done and green.
 ## 3. `lagom.toml` config face — `lagom-config` (SPEC §6)
 
 - **Flat human surface** (`TomlPolicy` → core `Policy`): default presence,
-  per-tool presence/rename/description, per-arg pin/default/enum/min/max/pattern,
-  with mutually-exclusive arg transforms enforced at lowering. *Why:* one model,
+  per-tool presence/rename/description, per-arg pin/default/enum/min/max/pattern/
+  forbid, with mutually-exclusive arg transforms enforced at lowering.
+  `parse_str` lowers TOML text a host keeps anywhere; `load` reads a file. *Why:* one model,
   two front-ends (§6.1) that cannot drift; the TOML carries only the flat surface
   while rich transforms stay in the builder (§6.2).
 - **JSON Schema for `lagom.toml`** (`json_schema`) — for editor validation

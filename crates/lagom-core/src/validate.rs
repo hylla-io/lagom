@@ -5,9 +5,10 @@
 //! that pins/constrains a vanished argument, or rules a vanished tool, is drift:
 //! callers must fail loud rather than forward a broken call.
 //!
-//! The call-contract guarantee (§5.1) holds by construction: the only transform
-//! that removes a property from the projected schema is `Pin`, which supplies
-//! the value on every call — so a hidden argument always has a value.
+//! The call-contract guarantee (§5.1): two transforms remove a property from the
+//! projected schema. `Pin` supplies the value on every call. `Forbid` keeps the
+//! argument absent, so it is refused here on an argument the upstream marks
+//! `required` — a hidden required argument always has a value.
 
 use std::collections::BTreeMap;
 
@@ -58,6 +59,17 @@ pub fn validate(policy: &Policy, upstream: &[ToolDef]) -> Result<(), Vec<DriftEr
             .and_then(|p| p.as_object());
 
         for (arg, ap) in &tp.args {
+            if matches!(ap, ArgPolicy::Forbid) {
+                // Absence is the rule, so an undeclared argument is grounded;
+                // a required one would break the call contract (§5.1).
+                if is_required(def, arg) {
+                    errors.push(DriftError::new(format!(
+                        "policy forbids argument `{arg}` on tool `{tool_name}`, \
+                         which the upstream requires"
+                    )));
+                }
+                continue;
+            }
             let Some(prop) = props.and_then(|p| p.get(arg)) else {
                 errors.push(DriftError::new(format!(
                     "policy references unknown argument `{arg}` on tool `{tool_name}`"
@@ -124,8 +136,16 @@ fn check_literals(
                 check_value(errors, tool, arg, "enum member", v, prop);
             }
         }
-        ArgPolicy::Constrain(_) | ArgPolicy::Passthrough => {}
+        ArgPolicy::Constrain(_) | ArgPolicy::Passthrough | ArgPolicy::Forbid => {}
     }
+}
+
+/// Whether the upstream schema lists `arg` in its top-level `required` array.
+fn is_required(def: &ToolDef, arg: &str) -> bool {
+    def.input_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .is_some_and(|required| required.iter().any(|v| v.as_str() == Some(arg)))
 }
 
 /// Validate a single literal against the upstream property's `type` and `enum`.
@@ -269,6 +289,55 @@ mod tests {
         );
         let errs = validate(&p, &upstream()).unwrap_err();
         assert!(errs[0].message.contains("vanished"));
+    }
+
+    /// The host's proof that a tool never receives an argument it does not
+    /// declare: forbidding it is grounded, not drift.
+    #[test]
+    fn forbid_on_an_undeclared_arg_validates() {
+        let p = policy_arg("version_pin", ArgPolicy::Forbid);
+        assert!(validate(&p, &typed_upstream()).is_ok());
+    }
+
+    #[test]
+    fn forbid_on_a_declared_optional_arg_validates() {
+        let p = policy_arg("limit", ArgPolicy::Forbid);
+        assert!(validate(&p, &typed_upstream()).is_ok());
+    }
+
+    #[test]
+    fn forbid_on_a_required_arg_is_drift() {
+        let up = vec![ToolDef::new(
+            "search",
+            None,
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"]
+            }),
+        )];
+        let p = policy_arg("query", ArgPolicy::Forbid);
+        let errs = validate(&p, &up).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("forbids") && e.message.contains("requires")),
+            "{errs:?}"
+        );
+    }
+
+    /// Forbid does not excuse the tool itself: an unknown tool is still drift.
+    #[test]
+    fn forbid_on_an_unknown_tool_is_still_drift() {
+        let mut args = BTreeMap::new();
+        args.insert("x".to_string(), ArgPolicy::Forbid);
+        let p = policy_with(
+            "ghost",
+            ToolPolicy {
+                args,
+                ..Default::default()
+            },
+        );
+        assert!(validate(&p, &typed_upstream()).is_err());
     }
 
     #[test]

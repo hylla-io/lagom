@@ -106,6 +106,11 @@ export declare class PolicyBuilder {
   constrainRange(tool: string, arg: string, min?: number | undefined | null, max?: number | undefined | null): void
   /** Constrain `tool`'s string `arg` to match a regex `pattern`. */
   constrainPattern(tool: string, arg: string, pattern: string): void
+  /**
+   * Forbid `tool`'s `arg`: removed from the projected schema, and a call that
+   * carries it is rejected (`SPEC.md` §4.1).
+   */
+  forbid(tool: string, arg: string): void
   /** Emit the authored policy as a JSON string, ready for the engine functions. */
   build(): string
 }
@@ -171,6 +176,23 @@ export declare function mint(runId: string, baseJson: string, dynamicJson?: stri
  * failure throw an `Error`.
  */
 export declare function mintStdioServer(policyJson: string, command: string, args?: Array<string> | undefined | null, env?: Array<[string, string]> | undefined | null, audit?: string | undefined | null, runId?: string | undefined | null): void
+
+/**
+ * Read a stored policy document (`SPEC.md` §6.6) and return the policy as JSON.
+ *
+ * The document is the strict, versioned form a host keeps with its own
+ * settings: `lagom_policy` (the format) and `default_presence` are required,
+ * and an unknown or repeated key is refused. A refused document throws an
+ * `Error`.
+ */
+export declare function policyFromDocument(documentJson: string): string
+
+/**
+ * Return a policy in its stored form (`SPEC.md` §6.6). The same policy always
+ * yields the same bytes. A policy with no `default_presence`, a repeated key,
+ * or a malformed rule throws an `Error`.
+ */
+export declare function policyToDocument(policyJson: string): string
 
 /**
  * Project an upstream tool surface through a policy (`SPEC.md` §3, §4).

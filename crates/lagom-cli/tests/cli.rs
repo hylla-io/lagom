@@ -747,6 +747,119 @@ fn refire_with_gating_record_stays_silent() {
     );
 }
 
+#[test]
+fn refire_enforces_a_recorded_forbid_and_reads_no_config() {
+    // A host hands lagom one generated record and nothing else. Every config
+    // location discovery knows (cwd, project root, XDG) holds a `lagom.toml`
+    // that would DROP `search`; refire must read none of them, so `search` stays
+    // listed. The recorded Forbid rules must hold against the real proxy: the
+    // declared `artifact` leaves the schema, and a call carrying the undeclared
+    // `version_pin` is refused before it reaches the upstream.
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::create_dir_all(cwd.join(".git")).unwrap();
+    std::fs::create_dir_all(cwd.join("xdg/lagom")).unwrap();
+    let dropping = "default-presence = \"drop\"\n";
+    std::fs::write(cwd.join("lagom.toml"), dropping).unwrap();
+    std::fs::write(cwd.join("xdg/lagom/lagom.toml"), dropping).unwrap();
+
+    let upstream = serde_json::json!({ "command": upstream_bin(), "args": [], "env": [] });
+    let record_path = cwd.join("mint.json");
+    let record = serde_json::json!({
+        "run_id": "forbid-run",
+        "sources": { "config_paths": [], "upstream": upstream, "dynamic_inputs": null },
+        "resolved": {
+            "policy": {
+                "default_presence": "keep",
+                "tools": { "search": { "args": {
+                    "artifact": "forbid",
+                    "version_pin": "forbid"
+                } } }
+            },
+            "upstream": upstream
+        }
+    });
+    std::fs::write(&record_path, serde_json::to_string(&record).unwrap()).unwrap();
+
+    let mut child = StdCommand::new(env!("CARGO_BIN_EXE_lagom"))
+        .current_dir(&cwd)
+        .env("HOME", &cwd)
+        .env("XDG_CONFIG_HOME", cwd.join("xdg"))
+        .args(["refire", "--record", record_path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn lagom refire");
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut send = |msg: serde_json::Value| {
+        let mut line = serde_json::to_string(&msg).unwrap();
+        line.push('\n');
+        stdin.write_all(line.as_bytes()).unwrap();
+        stdin.flush().unwrap();
+    };
+    let mut recv = || -> serde_json::Value {
+        let mut line = String::new();
+        let n = stdout.read_line(&mut line).expect("read response");
+        assert!(n > 0, "proxy closed before responding");
+        serde_json::from_str(&line).expect("response is JSON-RPC")
+    };
+
+    send(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    assert_eq!(recv()["id"], serde_json::json!(1));
+    send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+
+    send(serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
+    let list = recv();
+    let tools = list["result"]["tools"]
+        .as_array()
+        .expect("tools/list result");
+    let search = tools
+        .iter()
+        .find(|t| t["name"] == "search")
+        .unwrap_or_else(|| panic!("a discovered lagom.toml dropped `search`: {list}"));
+    let schema = if search.get("inputSchema").is_some() {
+        &search["inputSchema"]
+    } else {
+        &search["input_schema"]
+    };
+    assert!(
+        schema["properties"].get("artifact").is_none(),
+        "a forbidden declared argument leaves the schema: {search}"
+    );
+    assert!(schema["properties"].get("query").is_some(), "{search}");
+
+    send(serde_json::json!({
+        "jsonrpc":"2.0","id":3,"method":"tools/call",
+        "params": {"name":"search","arguments":{"query":"q","version_pin":7}}
+    }));
+    let refused = recv();
+    assert_eq!(refused["id"], serde_json::json!(3));
+    assert_eq!(
+        refused["error"]["code"],
+        serde_json::json!(-32001),
+        "a call carrying a forbidden argument is refused: {refused}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("version_pin")),
+        "the refusal names the argument: {refused}"
+    );
+
+    send(serde_json::json!({
+        "jsonrpc":"2.0","id":4,"method":"tools/call",
+        "params": {"name":"search","arguments":{"query":"q"}}
+    }));
+    let allowed = recv();
+    assert_eq!(allowed["id"], serde_json::json!(4));
+    assert!(allowed.get("error").is_none(), "{allowed}");
+
+    drop(stdin);
+    let _ = child.wait().expect("await lagom refire exit");
+}
+
 /// Mirror of `app.rs`'s `PREFLIGHT_STDIN_WAIT` (2s). Duplicated as a literal
 /// because `lagom-cli` ships a `[[bin]]` and no lib target, so an integration test
 /// cannot import the constant; `preflight_failure_waits_the_bounded_read_then_exits_silently`

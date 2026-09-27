@@ -178,6 +178,26 @@ fn refire(record_json: &str) -> PyResult<String> {
     dump_json(&core_refire(&record))
 }
 
+/// Read a stored policy document (`SPEC.md` §6.6) and return the policy as JSON.
+///
+/// The document is the strict, versioned form a host keeps with its own
+/// settings: `lagom_policy` (the format) and `default_presence` are required,
+/// and an unknown or repeated key is refused. A refused document raises
+/// `ValueError`.
+#[pyfunction]
+fn policy_from_document(document_json: &str) -> PyResult<String> {
+    let policy = lagom_core::document::parse(document_json).map_err(value_err)?;
+    dump_json(&policy)
+}
+
+/// Return a policy in its stored form (`SPEC.md` §6.6). The same policy always
+/// yields the same bytes. A policy with no `default_presence`, a repeated key,
+/// or a malformed rule raises `ValueError`.
+#[pyfunction]
+fn policy_to_document(policy_json: &str) -> PyResult<String> {
+    lagom_core::document::from_policy_json(policy_json).map_err(value_err)
+}
+
 /// Mint a stdio proxy server for `policy` over a spawned upstream and serve it on
 /// this process's stdio until the session ends (`SPEC.md` §7.2, §8, §10).
 ///
@@ -457,6 +477,14 @@ impl PolicyBuilder {
         );
     }
 
+    /// Forbid `tool`'s `arg`: removed from the projected schema, and a call that
+    /// carries it is rejected (`SPEC.md` §4.1).
+    fn forbid(&mut self, tool: &str, arg: &str) {
+        self.tool_mut(tool)
+            .args
+            .insert(arg.to_string(), ArgPolicy::Forbid);
+    }
+
     /// Emit the authored policy as a JSON string, ready for the engine functions.
     fn build(&self) -> PyResult<String> {
         dump_json(&self.policy)
@@ -472,6 +500,8 @@ fn lagom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate, m)?)?;
     m.add_function(wrap_pyfunction!(mint, m)?)?;
     m.add_function(wrap_pyfunction!(refire, m)?)?;
+    m.add_function(wrap_pyfunction!(policy_from_document, m)?)?;
+    m.add_function(wrap_pyfunction!(policy_to_document, m)?)?;
     m.add_function(wrap_pyfunction!(mint_stdio_server, m)?)?;
     m.add_function(wrap_pyfunction!(shipped_skills, m)?)?;
     m.add_function(wrap_pyfunction!(emit_skills, m)?)?;
@@ -675,6 +705,41 @@ mod tests {
     #[test]
     fn refire_malformed_record_is_value_error() {
         assert!(refire("not json").is_err());
+    }
+
+    /// The builder's `forbid` hides a declared arg and refuses a call carrying it.
+    #[test]
+    fn forbid_hides_the_arg_and_refuses_a_call_carrying_it() {
+        let mut b = PolicyBuilder::new();
+        b.forbid("search", "query");
+        let policy = b.build().unwrap();
+        assert!(policy.contains(r#""query":"forbid""#), "{policy}");
+
+        let projected = project(&upstream_json(), &policy).unwrap();
+        let defs: Vec<ToolDef> = serde_json::from_str(&projected).unwrap();
+        assert!(defs[0].input_schema["properties"].get("query").is_none());
+
+        let call = json!({"name": "search", "arguments": {"query": "x"}}).to_string();
+        assert!(rewrite(&call, &policy).is_err());
+    }
+
+    /// A stored document round-trips, and one without `default_presence` raises.
+    #[test]
+    fn policy_document_round_trips_and_refuses_a_missing_presence() {
+        let policy = PolicyBuilder::sealed().build().unwrap();
+        let doc = policy_to_document(&policy).unwrap();
+        assert!(doc.starts_with(r#"{"lagom_policy":1,"#), "{doc}");
+        assert_eq!(policy_from_document(&doc).unwrap(), policy);
+        assert!(policy_from_document(r#"{"lagom_policy":1}"#).is_err());
+    }
+
+    /// A repeated key and a missing `default_presence` are refused both ways.
+    #[test]
+    fn policy_document_refuses_repeats_and_a_missing_presence() {
+        let dup = r#"{"lagom_policy":1,"default_presence":"keep","tools":{"s":{"args":{"v":"forbid","v":"passthrough"}}}}"#;
+        assert!(policy_from_document(dup).is_err());
+        assert!(policy_to_document(r#"{"tools":{}}"#).is_err());
+        assert!(policy_to_document(r#"{"default_presence":"drop"}"#).is_ok());
     }
 
     /// A branded, sealed policy: keep `search` under the app's own name `find`

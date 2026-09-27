@@ -45,6 +45,8 @@ test("import exposes the binding surface", () => {
     "validate",
     "mint",
     "refire",
+    "policyFromDocument",
+    "policyToDocument",
     "mintStdioServer",
     "shippedSkills",
     "emitSkills",
@@ -53,6 +55,39 @@ test("import exposes the binding surface", () => {
   ]) {
     assert.ok(name in lagom, `missing export: ${name}`);
   }
+});
+
+test("PolicyBuilder.forbid() refuses a call carrying the argument", () => {
+  const b = new lagom.PolicyBuilder();
+  b.forbid("search", "version_pin");
+  const policy = b.build();
+  assert.throws(
+    () =>
+      lagom.rewrite(
+        JSON.stringify({ name: "search", arguments: { query: "x", version_pin: 3 } }),
+        policy,
+      ),
+    /version_pin/,
+  );
+  const out = JSON.parse(
+    lagom.rewrite(JSON.stringify({ name: "search", arguments: { query: "x" } }), policy),
+  );
+  assert.deepEqual(out.arguments, { query: "x" });
+});
+
+test("policyToDocument()/policyFromDocument() round-trip; a missing presence throws", () => {
+  const policy = lagom.PolicyBuilder.sealed().build();
+  const doc = lagom.policyToDocument(policy);
+  assert.equal(JSON.parse(doc).lagom_policy, 1);
+  assert.equal(lagom.policyFromDocument(doc), policy);
+  assert.throws(() => lagom.policyFromDocument(JSON.stringify({ lagom_policy: 1 })));
+});
+
+test("a repeated key and a missing default_presence throw", () => {
+  const dup =
+    '{"lagom_policy":1,"default_presence":"keep","tools":{"s":{"args":{"v":"forbid","v":"passthrough"}}}}';
+  assert.throws(() => lagom.policyFromDocument(dup), /\/tools\/s\/args\/v/);
+  assert.throws(() => lagom.policyToDocument('{"tools":{}}'), /default_presence/);
 });
 
 test("mint() then refire() round-trips an ephemeral projection (SPEC.md §8.2)", () => {
