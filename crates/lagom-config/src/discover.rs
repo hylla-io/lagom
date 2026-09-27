@@ -290,36 +290,7 @@ mod tests {
         assert_eq!(resolve_profile(&tmp.path, "missing"), None);
     }
 
-    /// Run `f` with `XDG_CONFIG_HOME`/`HOME` pointed at `dir` so discovery cannot
-    /// see the developer's real user config. Restores the environment after.
-    ///
-    /// Env mutation is process-global; this test crate is small and these tests
-    /// do not run truly in parallel against the same vars, but we still guard
-    /// with a mutex to be safe under `cargo test`'s thread pool.
     fn temp_env_xdg(dir: &Path, f: impl FnOnce()) {
-        use std::sync::Mutex;
-        static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let prev_home = std::env::var_os("HOME");
-        // SAFETY: single-threaded within the lock for the duration of `f`.
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", dir);
-            std::env::set_var("HOME", dir);
-        }
-
-        f();
-
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match prev_home {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
+        crate::test_env::with_user_config_dir(dir, f)
     }
 }

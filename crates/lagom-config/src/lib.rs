@@ -163,6 +163,59 @@ pub fn load_discovered(
     Ok(policy)
 }
 
+/// The one serialisation point for tests that repoint the user config dir.
+///
+/// `XDG_CONFIG_HOME` and `HOME` are process-global and tests run on a thread
+/// pool, so a lock per test module still lets two modules interleave their
+/// writes; every such test in the crate must take this lock.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::ffi::OsString;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores the prior values on drop, so a panicking `f` cannot leak its
+    /// environment into the next test that takes the lock.
+    struct Restore {
+        xdg: Option<OsString>,
+        home: Option<OsString>,
+    }
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: runs while `LOCK` is still held by the caller's guard.
+            unsafe {
+                match self.xdg.take() {
+                    Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                    None => std::env::remove_var("XDG_CONFIG_HOME"),
+                }
+                match self.home.take() {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    /// Run `f` with `XDG_CONFIG_HOME` and `HOME` pointed at `dir`, so discovery
+    /// cannot see the developer's real user config.
+    pub(crate) fn with_user_config_dir<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = Restore {
+            xdg: std::env::var_os("XDG_CONFIG_HOME"),
+            home: std::env::var_os("HOME"),
+        };
+        // SAFETY: every env writer in this crate's tests holds `LOCK`.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", dir);
+            std::env::set_var("HOME", dir);
+        }
+        f()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,34 +360,10 @@ mod tests {
 
     #[test]
     fn load_discovered_empty_is_passthrough() {
-        use std::sync::Mutex;
-        static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
         let tmp = TempDir::new("disc-empty");
-        // Isolate from the developer's real user config by pointing XDG/HOME at
-        // an empty temp dir, so discovery genuinely finds nothing.
-        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let prev_home = std::env::var_os("HOME");
-        // SAFETY: serialized by LOCK for the duration of this test.
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &tmp.path);
-            std::env::set_var("HOME", &tmp.path);
-        }
-
-        let policy = load_discovered(&tmp.path, None).unwrap();
+        let policy =
+            test_env::with_user_config_dir(&tmp.path, || load_discovered(&tmp.path, None).unwrap());
         assert_eq!(policy, Policy::passthrough());
-
-        unsafe {
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match prev_home {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
     }
 
     #[test]
