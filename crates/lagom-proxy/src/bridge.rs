@@ -104,6 +104,25 @@
 //! buffered upstream reader used for the handshake is threaded straight into the
 //! pump so no upstream bytes read past the probe response are dropped.
 //!
+//! Lines the probe reads that are not its own responses — an upstream is free
+//! to notify once lagom has initialised it, e.g. Claude Code's
+//! `notifications/claude/channel` — are held, not skipped ([`Held`]). So are
+//! the pump's non-response upstream lines until the harness sends
+//! `notifications/initialized`; then all of them are forwarded in arrival
+//! order, through the same projection as live traffic. That point comes from
+//! the spec's initialization ordering: the server "SHOULD NOT send requests
+//! other than pings and logging before receiving the `initialized`
+//! notification" (MCP `2025-11-25` lifecycle), and toward the harness lagom is
+//! the server. Responses are not held, which is how the harness's `initialize`
+//! response reaches it. The hold is bounded by [`HELD_LINES_MAX`], and hitting
+//! the bound is a loud failure, never a drop — locked by
+//! `the_probe_refuses_to_hold_more_than_the_bound` and
+//! `the_pump_ends_the_session_rather_than_hold_past_the_bound`; delivery and
+//! ordering by `notifications_emitted_during_the_probe_are_delivered_after_initialize`
+//! (`tests/proxy_roundtrip.rs`). Not covered: a harness that never sends
+//! `notifications/initialized` never receives held lines; lagom reports their
+//! count on stderr when the session ends.
+//!
 //! ## Concurrency
 //!
 //! Two independent tasks run the duplex bridge: one pumps downstream → upstream,
@@ -176,6 +195,65 @@ const PROBE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// more than the milliseconds it needs. The bound is safe to keep short because
 /// an unblockable `SIGKILL` follows immediately.
 const CHILD_EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// Most upstream lines lagom will hold for the harness before it has finished
+/// initialising ([`Held`]).
+///
+/// A declared bound, not a drop threshold: reaching it fails loudly — the drift
+/// probe returns [`ProxyError::Upstream`] (`InvalidData`), locked by
+/// `the_probe_refuses_to_hold_more_than_the_bound`, and the serve pump ends the
+/// session with a stderr diagnostic, locked by
+/// `the_pump_ends_the_session_rather_than_hold_past_the_bound`. 1024 lines is
+/// far above the handful of notifications a server emits at startup, while
+/// capping the memory a flooding upstream can pin before the harness initialises.
+const HELD_LINES_MAX: usize = 1024;
+
+/// Upstream lines that must reach the harness but may not yet
+/// (MCP spec, `2025-11-25` lifecycle, initialization).
+///
+/// Filled from two places, in arrival order: lines the drift probe reads that
+/// are not its own response (lagom initialised the upstream itself, so the
+/// upstream may already be sending notifications), then non-response lines the
+/// serve pump reads before the harness has sent `notifications/initialized`.
+/// Released to the harness, in order, once it has — the spec's ordering rule is
+/// "the server SHOULD NOT send requests other than pings and logging before
+/// receiving the `initialized` notification", and lagom is the server the
+/// harness is initialising against.
+///
+/// Dropping a non-empty `Held` reports the undelivered count on stderr: the
+/// session ended first (harness closed, upstream closed, bound hit), or the
+/// caller was [`validate_only`], which has no harness to deliver to.
+#[derive(Debug, Default)]
+struct Held(std::collections::VecDeque<String>);
+
+impl Held {
+    /// Queue `line`, or report the [`HELD_LINES_MAX`] bound as an error.
+    fn push(&mut self, line: String) -> std::io::Result<()> {
+        if self.0.len() >= HELD_LINES_MAX {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "upstream sent more than {HELD_LINES_MAX} messages before the harness \
+                     finished initialising; lagom refuses to drop them and refuses to hold more"
+                ),
+            ));
+        }
+        self.0.push_back(line);
+        Ok(())
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            eprintln!(
+                "lagom: {} upstream message(s) sent before the harness finished initialising \
+                 were never delivered to it",
+                self.0.len()
+            );
+        }
+    }
+}
 
 /// A shared, async writer used by both pump tasks for the downstream side.
 type SharedWriter = Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>;
@@ -344,6 +422,9 @@ pub struct Server {
     /// The buffered upstream reader, threaded from the drift probe into the pump
     /// so probe read-ahead is preserved.
     up_reader: BufReader<ChildStdout>,
+    /// Upstream lines the drift probe read that were not its own responses,
+    /// owed to the harness once it has initialised.
+    held: Held,
     /// The upstream tool surface probed at mint time, recorded once into the
     /// audit log at session start as [`AuditEvent::OriginalDefs`] (`SPEC.md`
     /// §8.2, §9.3).
@@ -395,10 +476,13 @@ impl Server {
             child,
             up_stdin,
             up_reader,
+            held,
             upstream_defs,
         } = self;
 
         let policy = Arc::new(resolved.policy.clone());
+        // Flips once the harness's `notifications/initialized` has been forwarded.
+        let (initialized_tx, initialized_rx) = tokio::sync::watch::channel(false);
         let pending: PendingListIds = Arc::new(Mutex::new(HashSet::new()));
         let audit: SharedAudit = Arc::new(Mutex::new(audit));
         let downstream_out: SharedWriter = Arc::new(Mutex::new(Box::new(downstream_out)));
@@ -433,6 +517,7 @@ impl Server {
             Arc::clone(&pending),
             Arc::clone(&audit),
             run_id,
+            initialized_tx,
         ));
 
         // upstream → downstream: project tools/list responses, forward the rest.
@@ -442,6 +527,8 @@ impl Server {
             Arc::clone(&downstream_out),
             Arc::clone(&policy),
             Arc::clone(&pending),
+            held,
+            initialized_rx,
         ));
 
         // The FIRST direction to close ends the session (module doc, *Teardown*).
@@ -570,7 +657,9 @@ async fn reap(mut child: Child) -> Teardown {
 ///
 /// `tools/call` requests are rewritten (or rejected straight back downstream);
 /// `tools/list` request ids are recorded for response projection; everything
-/// else is forwarded verbatim.
+/// else is forwarded verbatim. Forwarding the harness's
+/// `notifications/initialized` sets `initialized`, which releases the upstream
+/// lines [`pump_upstream`] is holding ([`Held`]).
 #[allow(clippy::too_many_arguments)]
 async fn pump_downstream<R, W>(
     reader: BufReader<R>,
@@ -580,6 +669,7 @@ async fn pump_downstream<R, W>(
     pending: PendingListIds,
     audit: SharedAudit,
     run_id: String,
+    initialized: tokio::sync::watch::Sender<bool>,
 ) where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -655,6 +745,9 @@ async fn pump_downstream<R, W>(
                 if write_value(&mut upstream, &msg).await.is_err() {
                     break;
                 }
+                if method_of(&msg) == Some("notifications/initialized") {
+                    initialized.send_replace(true);
+                }
             }
         }
     }
@@ -673,95 +766,163 @@ async fn pump_downstream<R, W>(
 /// A top-level array is **dropped, not forwarded**: it is the one shape that
 /// defeats both the id lookup and the surface gate, so it is handled before
 /// either runs (see the batch bullet in that note).
+///
+/// **Initialization ordering.** Until `initialized` turns true, only responses
+/// (JSON values without a `method`) pass — which is how the harness's own
+/// `initialize` response reaches it. Every other line joins `held` behind the
+/// lines the drift probe already held, so the upstream's non-response traffic
+/// keeps its order. On the flip `held` is flushed, in order, through the same
+/// projection as live traffic ([`upstream_out_line`]). Reaching
+/// [`HELD_LINES_MAX`] ends the session loudly; lines still held when the task
+/// ends are reported by [`Held`]'s `Drop`, including when it is aborted.
 async fn pump_upstream<R>(
     reader: BufReader<R>,
     downstream: SharedWriter,
     policy: Arc<lagom_core::Policy>,
     pending: PendingListIds,
+    mut held: Held,
+    mut initialized: tokio::sync::watch::Receiver<bool>,
 ) where
     R: AsyncRead + Unpin,
 {
     let mut lines = reader.lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    let mut released = false;
+    // False once the sender is gone: `changed()` would then return `Err` at once
+    // on every poll, so it must leave the `select!`.
+    let mut watching = true;
+    loop {
+        if !released && *initialized.borrow_and_update() {
+            released = true;
+            while let Some(line) = held.0.pop_front() {
+                let Some(out_line) = upstream_out_line(line, &policy, &pending).await else {
+                    continue;
+                };
+                let mut w = downstream.lock().await;
+                if write_line(&mut *w, &out_line).await.is_err() {
+                    return;
+                }
+            }
+        }
+        // Both branches are cancel safe (tokio `Lines::next_line`,
+        // `watch::Receiver::changed`), so losing the race drops no line.
+        let next = if released || !watching {
+            lines.next_line().await
+        } else {
+            tokio::select! {
+                next = lines.next_line() => next,
+                changed = initialized.changed() => {
+                    watching = changed.is_ok();
+                    continue;
+                }
+            }
+        };
+        let Ok(Some(line)) = next else { break };
         if line.trim().is_empty() {
             continue;
         }
-        let out_line = match serde_json::from_str::<Value>(&line) {
-            Ok(mut msg) => {
-                if msg.is_array() {
-                    // A JSON-RPC batch defeats BOTH defences at once: on an
-                    // array `get("id")` is None (so `correlated` is false) and
-                    // `pointer("/result/tools")` is None (so the shape gate is
-                    // false, `result` not being a numeric index), which means a
-                    // batched `tools/list` result would take the passthrough arm
-                    // and hand the agent the full unprojected surface — dropped
-                    // tools and pinned args included. Mirrors the downstream
-                    // batch rejection: MCP 2025-11-25 forbids batching, so drop
-                    // it loudly rather than project element-wise for a shape no
-                    // compliant upstream may emit.
-                    //
-                    // Dropping (rather than answering) is deliberate: the
-                    // elements' ids are the upstream's, and synthesising a
-                    // response per element would fabricate results lagom never
-                    // saw. Cost: the harness's matching request stays unanswered
-                    // until its own timeout. Fail-closed direction chosen over a
-                    // live session, because the alternative is the leak itself.
-                    eprintln!(
-                        "lagom: DROPPED a batched (top-level array) upstream message; \
-                         MCP 2025-11-25 forbids JSON-RPC batching and forwarding it \
-                         would have bypassed tool-surface projection"
-                    );
-                    continue;
-                }
-                // Correlation is looked up ONLY for responses. Server→client
-                // requests/notifications (`elicitation/create`,
-                // `sampling/createMessage`, …) number their ids in a *separate*
-                // namespace that commonly restarts at 0/1, so keying them here
-                // would let one silently evict a pending `tools/list` entry and
-                // manufacture the "UNCORRELATED tool surface" warning that is
-                // supposed to signal an anomaly.
-                let correlated = if msg.get("method").is_some() {
-                    false
-                } else {
-                    match msg.get("id").and_then(id_key) {
-                        Some(key) => pending.lock().await.remove(&key),
-                        None => false,
-                    }
-                };
-                if (correlated || carries_tool_surface(&msg))
-                    && project_list_response(&mut msg, &policy)
-                {
-                    if !correlated {
-                        // Loud, because it means either an upstream whose id
-                        // representation drifted or an unsolicited surface — and
-                        // the pre-fix code forwarded this case raw.
-                        eprintln!(
-                            "lagom: projected an UNCORRELATED tool surface (id {}); \
-                             forwarding it unprojected would have leaked the full \
-                             upstream surface",
-                            msg.get("id").unwrap_or(&Value::Null)
-                        );
-                    }
-                    // Never fall back to `line` on failure: that is precisely the
-                    // raw-surface leak this arm exists to prevent.
-                    serde_json::to_string(&msg).unwrap_or_else(|e| {
-                        eprintln!("lagom: could not re-serialise projected tools/list: {e}");
-                        PROJECTION_FAILED_LINE.to_string()
-                    })
-                } else {
-                    line
-                }
+        if !released && !is_response(&line) {
+            if let Err(e) = held.push(line) {
+                eprintln!("lagom: ending the session: {e}");
+                break;
             }
-            // Not JSON: not a JSON-RPC response and not a tool surface. Real
-            // servers log to stdout, so this stays verbatim passthrough (see the
-            // module-level residual note).
-            Err(_) => line,
+            continue;
+        }
+        let Some(out_line) = upstream_out_line(line, &policy, &pending).await else {
+            continue;
         };
         let mut w = downstream.lock().await;
         if write_line(&mut *w, &out_line).await.is_err() {
             break;
         }
     }
+}
+
+/// Whether an upstream line is a JSON-RPC response: a JSON value with no
+/// `method`. A top-level array counts, so it reaches [`upstream_out_line`]'s
+/// loud drop at once instead of waiting in [`Held`].
+fn is_response(line: &str) -> bool {
+    serde_json::from_str::<Value>(line).is_ok_and(|msg| msg.get("method").is_none())
+}
+
+/// The downstream line for one upstream line, or `None` for a batch dropped
+/// loudly. Projects every message that carries a tool surface; see
+/// [`pump_upstream`].
+async fn upstream_out_line(
+    line: String,
+    policy: &lagom_core::Policy,
+    pending: &PendingListIds,
+) -> Option<String> {
+    let out_line = match serde_json::from_str::<Value>(&line) {
+        Ok(mut msg) => {
+            if msg.is_array() {
+                // A JSON-RPC batch defeats BOTH defences at once: on an
+                // array `get("id")` is None (so `correlated` is false) and
+                // `pointer("/result/tools")` is None (so the shape gate is
+                // false, `result` not being a numeric index), which means a
+                // batched `tools/list` result would take the passthrough arm
+                // and hand the agent the full unprojected surface — dropped
+                // tools and pinned args included. Mirrors the downstream
+                // batch rejection: MCP 2025-11-25 forbids batching, so drop
+                // it loudly rather than project element-wise for a shape no
+                // compliant upstream may emit.
+                //
+                // Dropping (rather than answering) is deliberate: the
+                // elements' ids are the upstream's, and synthesising a
+                // response per element would fabricate results lagom never
+                // saw. Cost: the harness's matching request stays unanswered
+                // until its own timeout. Fail-closed direction chosen over a
+                // live session, because the alternative is the leak itself.
+                eprintln!(
+                    "lagom: DROPPED a batched (top-level array) upstream message; \
+                         MCP 2025-11-25 forbids JSON-RPC batching and forwarding it \
+                         would have bypassed tool-surface projection"
+                );
+                return None;
+            }
+            // Correlation is looked up ONLY for responses. Server→client
+            // requests/notifications (`elicitation/create`,
+            // `sampling/createMessage`, …) number their ids in a *separate*
+            // namespace that commonly restarts at 0/1, so keying them here
+            // would let one silently evict a pending `tools/list` entry and
+            // manufacture the "UNCORRELATED tool surface" warning that is
+            // supposed to signal an anomaly.
+            let correlated = if msg.get("method").is_some() {
+                false
+            } else {
+                match msg.get("id").and_then(id_key) {
+                    Some(key) => pending.lock().await.remove(&key),
+                    None => false,
+                }
+            };
+            if (correlated || carries_tool_surface(&msg)) && project_list_response(&mut msg, policy)
+            {
+                if !correlated {
+                    // Loud, because it means either an upstream whose id
+                    // representation drifted or an unsolicited surface — and
+                    // the pre-fix code forwarded this case raw.
+                    eprintln!(
+                        "lagom: projected an UNCORRELATED tool surface (id {}); \
+                             forwarding it unprojected would have leaked the full \
+                             upstream surface",
+                        msg.get("id").unwrap_or(&Value::Null)
+                    );
+                }
+                // Never fall back to `line` on failure: that is precisely the
+                // raw-surface leak this arm exists to prevent.
+                serde_json::to_string(&msg).unwrap_or_else(|e| {
+                    eprintln!("lagom: could not re-serialise projected tools/list: {e}");
+                    PROJECTION_FAILED_LINE.to_string()
+                })
+            } else {
+                line
+            }
+        }
+        // Not JSON: not a JSON-RPC response and not a tool surface. Real
+        // servers log to stdout, so this stays verbatim passthrough (see the
+        // module-level residual note).
+        Err(_) => line,
+    };
+    Some(out_line)
 }
 
 /// The decision for a `tools/call`: forward rewritten params, or reject.
@@ -979,8 +1140,9 @@ pub async fn spawn_and_validate(resolved: ResolvedPolicy) -> Result<Server, Prox
         .take()
         .expect("child spawned with piped stdout");
     let mut up_reader = BufReader::new(up_stdout);
+    let mut held = Held::default();
 
-    let upstream_defs = match probe(&mut up_stdin, &mut up_reader).await {
+    let upstream_defs = match probe(&mut up_stdin, &mut up_reader, &mut held).await {
         Ok(defs) => defs,
         Err(e) => {
             // `kill` = SIGKILL + `wait`, so the child is reaped here rather than
@@ -1004,6 +1166,7 @@ pub async fn spawn_and_validate(resolved: ResolvedPolicy) -> Result<Server, Prox
         child,
         up_stdin,
         up_reader,
+        held,
         upstream_defs,
     })
 }
@@ -1086,7 +1249,9 @@ pub async fn validate_only(resolved: ResolvedPolicy) -> Result<Teardown, ProxyEr
     // a *self*-exit, and that wait is only meaningful once the child has seen EOF.
     // On the serve path `pump_downstream` does this on its way out; there is no
     // pump here. `up_reader` (the child's stdout) is left unbound by the `..`, so
-    // it drops when that `let` statement completes.
+    // it drops when that `let` statement completes. So does `held`: there is no
+    // harness to deliver probe-time notifications to, and its `Drop` reports how
+    // many there were.
     drop(up_stdin);
     Ok(reap(child).await)
 }
@@ -1124,11 +1289,12 @@ const LIST_PROBE_ID: &str = "lagom-drift-probe";
 /// upstream emits right after its probe response (e.g. a queued notification or
 /// batched output) stay in the buffer rather than being discarded with a
 /// throwaway reader. Dedicated probe ids keep the probe traffic from colliding
-/// with the harness's own requests; unrelated lines (e.g. server log
-/// notifications) are skipped.
+/// with the harness's own requests; every other line (notifications, server
+/// logs) goes to `held` for delivery to the harness ([`Held`]).
 async fn probe<W>(
     upstream: &mut W,
     reader: &mut BufReader<ChildStdout>,
+    held: &mut Held,
 ) -> Result<Vec<ToolDef>, ProxyError>
 where
     W: AsyncWrite + Unpin,
@@ -1147,7 +1313,7 @@ where
     write_value(upstream, &init)
         .await
         .map_err(|source| ProxyError::Upstream { source })?;
-    let _ = read_probe_response(reader, INIT_PROBE_ID, "initialize").await?;
+    let _ = read_probe_response(reader, held, INIT_PROBE_ID, "initialize").await?;
 
     // 2. notifications/initialized → no response expected.
     let initialized = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
@@ -1165,7 +1331,7 @@ where
     write_value(upstream, &list)
         .await
         .map_err(|source| ProxyError::Upstream { source })?;
-    let msg = read_probe_response(reader, LIST_PROBE_ID, "tools/list").await?;
+    let msg = read_probe_response(reader, held, LIST_PROBE_ID, "tools/list").await?;
 
     let line = msg.to_string();
     let tools = msg
@@ -1181,16 +1347,19 @@ where
 }
 
 /// Read lines from `reader` until one is a JSON-RPC response carrying the probe
-/// `id`, returning the parsed message. Lines before it (server logs, unrelated
-/// notifications) are skipped; EOF before the response is a loud error.
+/// `id`, returning the parsed message. Every other non-blank line before it
+/// (server logs, notifications) is appended to `held`, with its line terminator
+/// stripped as [`pump_upstream`]'s `lines()` strips it; overflowing
+/// [`HELD_LINES_MAX`] and EOF before the response are loud errors.
 ///
 /// Bounded by [`PROBE_RESPONSE_TIMEOUT`], which is what makes a *silent* upstream
 /// distinguishable from a slow one: the loop itself has no exit condition other
 /// than the wanted response or EOF, so an upstream that connects, says nothing and
 /// never closes stdout used to hang `spawn_and_validate` forever with no
-/// diagnostic. The bound wraps the whole loop, so skipped lines cannot extend it.
+/// diagnostic. The bound wraps the whole loop, so held lines cannot extend it.
 async fn read_probe_response(
     reader: &mut BufReader<ChildStdout>,
+    held: &mut Held,
     id: &str,
     phase: &str,
 ) -> Result<Value, ProxyError> {
@@ -1209,13 +1378,21 @@ async fn read_probe_response(
                     ),
                 });
             }
-            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if msg.get("id").and_then(Value::as_str) != Some(id) {
+            if let Ok(msg) = serde_json::from_str::<Value>(&line)
+                && msg.get("id").and_then(Value::as_str) == Some(id)
+            {
+                return Ok(msg);
+            }
+            if line.trim().is_empty() {
                 continue;
             }
-            return Ok(msg);
+            let line = line
+                .strip_suffix('\n')
+                .map(|l| l.strip_suffix('\r').unwrap_or(l))
+                .unwrap_or(&line)
+                .to_string();
+            held.push(line)
+                .map_err(|source| ProxyError::Upstream { source })?;
         }
     };
     // `TimedOut` (not `UnexpectedEof`): callers branch on the typed kind, and a
@@ -1348,6 +1525,10 @@ mod tests {
         let pending: PendingListIds = Arc::new(Mutex::new(HashSet::new()));
         let down: SharedWriter = Arc::new(Mutex::new(Box::new(proxy_down_out)));
         let audit: SharedAudit = Arc::new(Mutex::new(None));
+        // These tests drive an already-initialised session: the initialization
+        // hold is locked by `notifications_emitted_during_the_probe_are_…` in
+        // `tests/proxy_roundtrip.rs`.
+        let (initialized_tx, initialized_rx) = tokio::sync::watch::channel(true);
 
         tokio::spawn(pump_downstream(
             BufReader::new(proxy_down_in),
@@ -1357,12 +1538,15 @@ mod tests {
             Arc::clone(&pending),
             audit,
             "test-run".to_string(),
+            initialized_tx,
         ));
         tokio::spawn(pump_upstream(
             BufReader::new(proxy_up_in),
             down,
             policy,
             Arc::clone(&pending),
+            Held::default(),
+            initialized_rx,
         ));
 
         Wired {
@@ -1865,5 +2049,178 @@ mod tests {
             msg.contains("`initialize`") && msg.contains("10s"),
             "the error must name the stalled phase and the budget: {msg}"
         );
+    }
+
+    /// One more notification than [`HELD_LINES_MAX`] as a newline-joined block.
+    fn over_bound_notifications() -> String {
+        let note = r#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#;
+        format!("{note}\n").repeat(HELD_LINES_MAX + 1)
+    }
+
+    #[tokio::test]
+    async fn the_probe_refuses_to_hold_more_than_the_bound() {
+        let path = std::env::temp_dir().join(format!("lagom-flood-{}", std::process::id()));
+        std::fs::write(&path, over_bound_notifications()).unwrap();
+        let err = spawn_and_validate(ResolvedPolicy {
+            policy: Policy::passthrough(),
+            upstream: UpstreamCommand {
+                command: "sh".into(),
+                args: vec![
+                    "-c".into(),
+                    format!("read _l; cat '{}'; exec sleep 300", path.display()),
+                ],
+                env: vec![],
+            },
+        })
+        .await
+        .expect_err("a flood past the bound must fail the probe, never be dropped");
+        std::fs::remove_file(&path).unwrap();
+
+        let ProxyError::Upstream { source } = &err else {
+            panic!("expected ProxyError::Upstream, got {err:?}");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::InvalidData, "{source}");
+        assert!(source.to_string().contains(&HELD_LINES_MAX.to_string()));
+    }
+
+    #[tokio::test]
+    async fn the_pump_ends_the_session_rather_than_hold_past_the_bound() {
+        let (mut upstream_tx, proxy_up_in) = tokio::io::duplex(1024 * 1024);
+        let (proxy_down_out, _from_proxy) = tokio::io::duplex(64 * 1024);
+        let down: SharedWriter = Arc::new(Mutex::new(Box::new(proxy_down_out)));
+        let (_initialized_tx, initialized_rx) = tokio::sync::watch::channel(false);
+        let pump = tokio::spawn(pump_upstream(
+            BufReader::new(proxy_up_in),
+            down,
+            Arc::new(Policy::passthrough()),
+            Arc::new(Mutex::new(HashSet::new())),
+            Held::default(),
+            initialized_rx,
+        ));
+
+        upstream_tx
+            .write_all(over_bound_notifications().as_bytes())
+            .await
+            .unwrap();
+        // `upstream_tx` stays open, so only the bound can end the pump.
+        tokio::time::timeout(Duration::from_secs(10), pump)
+            .await
+            .expect("the pump must end the session at the bound, not hold forever")
+            .expect("the pump must not panic");
+    }
+
+    #[tokio::test]
+    async fn the_pump_holds_non_responses_until_the_harness_initialises() {
+        let (mut upstream_tx, proxy_up_in) = tokio::io::duplex(64 * 1024);
+        let (proxy_down_out, from_proxy) = tokio::io::duplex(64 * 1024);
+        let down: SharedWriter = Arc::new(Mutex::new(Box::new(proxy_down_out)));
+        let (initialized_tx, initialized_rx) = tokio::sync::watch::channel(false);
+        let mut held = Held::default();
+        let probe_note =
+            r#"{"jsonrpc":"2.0","method":"notifications/message","params":{"n":"probe"}}"#;
+        held.push(probe_note.to_string()).unwrap();
+        tokio::spawn(pump_upstream(
+            BufReader::new(proxy_up_in),
+            down,
+            Arc::new(Policy::passthrough()),
+            Arc::new(Mutex::new(HashSet::new())),
+            held,
+            initialized_rx,
+        ));
+        let mut from_proxy = BufReader::new(from_proxy);
+        async fn next(r: &mut BufReader<DuplexStream>) -> Value {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(5), r.read_line(&mut line))
+                .await
+                .expect("a line must arrive")
+                .unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+
+        let pump_note =
+            r#"{"jsonrpc":"2.0","method":"notifications/message","params":{"n":"pump"}}"#;
+        let response = r#"{"jsonrpc":"2.0","id":7,"result":{}}"#;
+        upstream_tx
+            .write_all(format!("{pump_note}\n{response}\n").as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(
+            next(&mut from_proxy).await["id"],
+            json!(7),
+            "a response passes before initialisation; the notification ahead of it waits"
+        );
+
+        initialized_tx.send_replace(true);
+        for expected in ["probe", "pump"] {
+            let note = next(&mut from_proxy).await;
+            assert_eq!(note["params"]["n"], json!(expected), "{note}");
+        }
+    }
+
+    /// A surface-bearing notification the upstream emits DURING the drift probe
+    /// is held, and on release is projected exactly as live traffic would be:
+    /// the hold must never be a route around the policy.
+    #[tokio::test]
+    async fn a_held_tool_surface_is_projected_on_release() {
+        let note = format!(
+            r#"{{"jsonrpc":"2.0","method":"notifications/x","result":{{"tools":{}}}}}"#,
+            upstream_tools()
+        );
+        let init = concat!(
+            r#"{"jsonrpc":"2.0","id":"lagom-init-probe","result":{"protocolVersion":"2025-11-25","#,
+            r#""capabilities":{},"serverInfo":{"name":"held-stub","version":"0"}}}"#
+        );
+        let list = format!(
+            r#"{{"jsonrpc":"2.0","id":"lagom-drift-probe","result":{{"tools":{}}}}}"#,
+            upstream_tools()
+        );
+        let harness_init = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        let server = spawn_and_validate(ResolvedPolicy {
+            policy: narrowing_policy(),
+            upstream: UpstreamCommand {
+                command: "sh".into(),
+                args: vec![
+                    "-c".into(),
+                    format!(
+                        "read _l; printf '%s\\n' '{note}' '{init}'; read _l; read _l; \
+                         printf '%s\\n' '{list}'; read _l; printf '%s\\n' '{harness_init}'; \
+                         exec sleep 300"
+                    ),
+                ],
+                env: vec![],
+            },
+        })
+        .await
+        .expect("the stub answers the drift probe");
+
+        let (mut to_proxy, down_in) = tokio::io::duplex(64 * 1024);
+        let (down_out, from_proxy) = tokio::io::duplex(64 * 1024);
+        let bridge = tokio::spawn(server.run_with(down_in, down_out, None, "test-run"));
+        let mut from_proxy = BufReader::new(from_proxy);
+        async fn next(r: &mut BufReader<DuplexStream>) -> Value {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(5), r.read_line(&mut line))
+                .await
+                .expect("a line must arrive")
+                .unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+
+        to_proxy
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n")
+            .await
+            .unwrap();
+        assert_eq!(next(&mut from_proxy).await["id"], json!(1));
+        to_proxy
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
+            .await
+            .unwrap();
+        let released = next(&mut from_proxy).await;
+        assert_eq!(released["method"], json!("notifications/x"), "{released}");
+        assert_projected(&released);
+
+        drop(to_proxy);
+        // Reaps the stub; teardown is locked by its own tests, not this one.
+        let _ = tokio::time::timeout(Duration::from_secs(30), bridge).await;
     }
 }

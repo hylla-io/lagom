@@ -14,6 +14,12 @@
 //! advertises a *different* surface (the `artifact` arg renamed to `vault`) so a
 //! test can drive the drift-fail-loud path (`SPEC.md` §5.3).
 //!
+//! With `LAGOM_FAKE_EARLY_NOTIFY` set, it writes one
+//! `notifications/claude/channel` notification just before its FIRST
+//! `initialize` response and one just before its FIRST `tools/list` response —
+//! both of which are lagom's own drift probe — so a test can assert that
+//! upstream notifications emitted during the probe reach the harness.
+//!
 //! It is **strict about the MCP lifecycle** (MCP spec, `2025-11-25`): a
 //! `tools/list` or `tools/call` received before the `initialize`/`initialized`
 //! handshake completes is answered with a JSON-RPC error, mirroring real
@@ -70,6 +76,9 @@ fn main() {
     // MCP lifecycle state: `tools/list`/`tools/call` are rejected until the
     // `initialize` request + `notifications/initialized` notification arrive.
     let mut initialized = false;
+    let early_notify = std::env::var_os("LAGOM_FAKE_EARLY_NOTIFY").is_some();
+    let mut sent_init_note = false;
+    let mut sent_list_note = false;
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -104,6 +113,33 @@ fn main() {
             }
             let _ = stdout.flush();
             continue;
+        }
+
+        // Emitted ahead of the response, so it lands inside lagom's drift probe.
+        if early_notify {
+            let channel = match method {
+                "initialize" if !sent_init_note => {
+                    sent_init_note = true;
+                    Some("during-initialize")
+                }
+                "tools/list" if !sent_list_note => {
+                    sent_list_note = true;
+                    Some("during-tools-list")
+                }
+                _ => None,
+            };
+            if let Some(content) = channel {
+                let note = json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/claude/channel",
+                    "params": { "content": content }
+                });
+                let mut out = serde_json::to_string(&note).expect("serialize notification");
+                out.push('\n');
+                if stdout.write_all(out.as_bytes()).is_err() {
+                    break;
+                }
+            }
         }
 
         let response = match method {

@@ -119,10 +119,17 @@ async fn start_proxy(
     audit: Option<AuditLog>,
     run_id: &str,
 ) -> Result<(Harness, tokio::task::JoinHandle<()>), ProxyError> {
-    let resolved = ResolvedPolicy {
-        policy,
-        upstream: fixture_command(false),
-    };
+    start_proxy_with(policy, fixture_command(false), audit, run_id).await
+}
+
+/// [`start_proxy`] against a caller-chosen upstream.
+async fn start_proxy_with(
+    policy: Policy,
+    upstream: UpstreamCommand,
+    audit: Option<AuditLog>,
+    run_id: &str,
+) -> Result<(Harness, tokio::task::JoinHandle<()>), ProxyError> {
+    let resolved = ResolvedPolicy { policy, upstream };
     let server = lagom_proxy::spawn_and_validate(resolved).await?;
 
     // harness → proxy, and proxy → harness, each a duplex pair.
@@ -387,6 +394,54 @@ async fn initialize_and_unknown_methods_passthrough_unchanged() {
         json!(-32601),
         "passthrough error unchanged"
     );
+}
+
+/// Upstream notifications emitted DURING lagom's drift probe reach the harness,
+/// in order, and only after the harness's own `initialize` response and its
+/// `notifications/initialized` (MCP `2025-11-25` lifecycle, initialization
+/// ordering) — e.g. Claude Code channel notifications sent at startup.
+#[tokio::test]
+async fn notifications_emitted_during_the_probe_are_delivered_after_initialize() {
+    let mut upstream = fixture_command(false);
+    upstream
+        .env
+        .push(("LAGOM_FAKE_EARLY_NOTIFY".to_string(), "1".to_string()));
+    let (mut h, _bridge) = start_proxy_with(projection_policy(), upstream, None, "run-early")
+        .await
+        .expect("serve");
+    async fn recv(h: &mut Harness, what: &str) -> Value {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), h.recv()).await {
+            Ok(v) => v,
+            Err(_) => panic!("never delivered: {what}"),
+        }
+    }
+
+    h.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}))
+        .await;
+    let first = recv(&mut h, "initialize response").await;
+    assert_eq!(
+        first.get("id"),
+        Some(&json!(1)),
+        "the initialize response must precede held notifications: {first}"
+    );
+
+    h.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+        .await;
+    for expected in ["during-initialize", "during-tools-list"] {
+        let note = recv(&mut h, expected).await;
+        assert_eq!(
+            note["method"],
+            json!("notifications/claude/channel"),
+            "{note}"
+        );
+        assert_eq!(note["params"]["content"], json!(expected), "{note}");
+    }
+
+    // The session is live afterwards: ordinary traffic still round-trips.
+    h.send(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}))
+        .await;
+    let list = recv(&mut h, "tools/list response").await;
+    assert_eq!(list.get("id"), Some(&json!(2)), "{list}");
 }
 
 #[tokio::test]
