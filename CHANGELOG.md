@@ -6,6 +6,11 @@ All notable changes to lagom. Format loosely follows
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-27
+
+A bug-fix release: upstream notifications at startup now reach the harness, and
+every dependency version is stated exactly or as a floor.
+
 ### Fixed
 
 - **Upstream notifications at startup reach the harness.** Lines the upstream
@@ -16,7 +21,25 @@ All notable changes to lagom. Format loosely follows
   - The hold is capped at 1024 lines. Hitting the cap fails loudly: the probe
     errors, or the session ends with a stderr message.
 
-## [0.2.0] — unreleased
+### Changed
+
+- **Exact pins and floors.** Library crates (`lagom-core`, `lagom-config`,
+  `lagom-audit`, `lagom-proxy`) declare minimum versions. End products — the
+  CLI, the Python and Node bindings, `lagom-wasm` and the parity runners — pin
+  exactly. `@napi-rs/cli` is pinned in `package.json`, `just node-build` and
+  `release.yml`.
+- **Dependency updates.** clap 4.6.7, regex 1.13.1, serde 1.0.229,
+  serde_json 1.0.151, toml 1.1.6, `@napi-rs/cli` 3.10.5.
+- **Config discovery tests share one env lock**, so tests in different modules
+  no longer interleave `HOME` / `XDG_CONFIG_HOME` writes.
+
+### Upgrade impact
+
+- None for callers. Published library crates declare minimum versions, so a
+  consumer keeps its own choice of each shared dependency at or above the
+  floor; end products pin exactly.
+
+## [0.2.0] — 2026-09-26
 
 A host can keep lagom's policies with its own settings, and a policy can
 require an argument to be absent. lagom still holds no database and needs no
