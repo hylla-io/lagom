@@ -9,7 +9,7 @@ go 1.26.0
 
 require (
 	github.com/hylla-io/lagom/go v0.0.0
-	github.com/mark3labs/mcp-go v1.1.0
+	github.com/mark3labs/mcp-go v1.1.1
 )
 
 require (
