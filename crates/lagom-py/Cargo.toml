@@ -28,7 +28,7 @@ lagom-proxy = { path = "../lagom-proxy" }
 lagom-audit = { path = "../lagom-audit" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-tokio = { version = "=1.52.3", features = ["rt", "macros"] }
+tokio = { version = "=1.53.1", features = ["rt", "macros"] }
 # `extension-module` is NOT enabled by default: with it on, the crate links
 # against no libpython, so `cargo test`/`cargo clippy` (which build a test
 # *binary*) fail to resolve the Py* symbols. maturin turns it on for the wheel
